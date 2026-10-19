@@ -632,6 +632,50 @@ class GameAudio {
   }
 
   // INSERT_SFX_HERE
+  playArcadeLaser() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary();
+    const dur = 0.2;
+    
+    const osc = b.ctx.createOscillator();
+    osc.type = 'sawtooth';
+    osc.frequency.setValueAtTime(1800 * v, b.now);
+    osc.frequency.exponentialRampToValueAtTime(80 * v, b.now + dur);
+    
+    const filter = b.ctx.createBiquadFilter();
+    filter.type = 'lowpass';
+    filter.Q.value = 5;
+    filter.frequency.setValueAtTime(2000 * v, b.now);
+    filter.frequency.exponentialRampToValueAtTime(100 * v, b.now + dur);
+    
+    const gain = b.ctx.createGain();
+    gain.gain.setValueAtTime(0.12, b.now);
+    gain.gain.exponentialRampToValueAtTime(0.0001, b.now + dur);
+    
+    osc.connect(filter);
+    filter.connect(gain);
+    gain.connect(b.out);
+    
+    osc.start(b.now);
+    osc.stop(b.now + dur);
+  }
+
+  playErrorBuzz() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary();
+    this.blip(b, b.now, { type: 'sawtooth', freq: 150 * v, dur: 0.2, gain: 0.08 });
+    this.blip(b, b.now, { type: 'sawtooth', freq: 159 * v, dur: 0.2, gain: 0.08 });
+  }
+
+  playConfirmSelect() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary();
+    this.blip(b, b.now, { type: 'sine', freq: 523.25 * v, dur: 0.1, gain: 0.08 });
+    this.blip(b, b.now + 0.08, { type: 'sine', freq: 783.99 * v, dur: 0.15, gain: 0.1 });
+  }
   playCoinPickup() {
     const b = this.begin();
     if (!b) return;

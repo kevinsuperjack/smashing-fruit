@@ -46,49 +46,14 @@
   ],
   "sections": [
     {
-      "title": "Design Pillars",
-      "content": "1. Tactile Physics Delight: Bouncy, soft, satisfying rigid-body collisions. 2. Cozy Kawaii Aesthetic: Warm pastel palette, expressive fruit faces, and pleasant chime audio. 3. Spatial Strategy: Managing container volume and anticipating chain-reaction fruit fusions.",
-      "summary": "Core emotional and mechanical focus."
-    },
-    {
-      "title": "Core Loop",
-      "content": "Aim droppable fruit -> Release into physics jar -> Collide identical fruit tiers -> Merge into next tier with particle burst and score chimes -> Avoid overflowing past the danger line -> Beat personal high score.",
-      "summary": "The moment-to-moment gameplay cycle."
-    },
-    {
-      "title": "Core Mechanics",
-      "content": "1. 11-Tier Fruit Evolution: Merging identical fruits destroys both and creates the next tier fruit at the midpoint with an elastic pop animation. 2. Random Dropper Pool: The dropper spawns only Tiers 1 through 5 (Cherry, Strawberry, Grape, Dekopon, Persimmon). 3. 500ms Drop Cooldown: Prevents rapid-fire dropping and accidental overlaps. 4. Danger Line Detection: A horizontal threshold checks settled fruits (>2s age); exceeding it continuously for 2.5s triggers Game Over.",
-      "summary": "Key interactive systems and physics rules."
-    },
-    {
       "title": "Fruit Evolution Hierarchy",
-      "content": "Tier 1: Cherry (r=16, #E63946, 2 pts)\nTier 2: Strawberry (r=24, #FF595E, 4 pts)\nTier 3: Grape (r=32, #8338EC, 8 pts)\nTier 4: Dekopon (r=38, #FB8500, 16 pts)\nTier 5: Persimmon (r=46, #F77F00, 32 pts)\nTier 6: Apple (r=56, #D62828, 64 pts)\nTier 7: Pear (r=66, #A7C957, 128 pts)\nTier 8: Peach (r=76, #FF99C8, 256 pts)\nTier 9: Pineapple (r=88, #FFBE0B, 512 pts)\nTier 10: Melon (r=102, #52B788, 1024 pts)\nTier 11: Watermelon (r=118, #2D6A4F, 2048 pts; two Watermelons merge into huge celebratory burst for 4096 pts).",
-      "summary": "Complete 11-tier radii, scoring, and color breakdown."
+      "content": "Tier 1: Cherry (r=16, #E63946, 2 pts)\nTier 2: Strawberry (r=24, #FF595E, 4 pts)\nTier 3: Grape (r=32, #8338EC, 8 pts)\nTier 4: Dekopon (r=38, #FB8500, 16 pts)\nTier 5: Persimmon (r=46, #F77F00, 32 pts)\nTier 6: Cucumber (r=52, #38B000, 48 pts, striped & bumpy skin, low friction)\nTier 7: Apple (r=58, #D62828, 64 pts)\nTier 8: Pear (r=68, #A7C957, 128 pts)\nTier 9: Peach (r=78, #FF99C8, 256 pts)\nTier 10: Pineapple (r=90, #FFBE0B, 512 pts)\nTier 11: Melon (r=104, #52B788, 1024 pts)\nTier 12: Watermelon (r=118, #2D6A4F, 2048 pts)\nTier 13: King Durian (r=130, #9EF01A, 5000 pts, spiky golden ring, high density; two King Durians merge into legendary celestial fireworks for 10000 pts).",
+      "summary": "13-tier radii, scoring, and color breakdown with Cucumber and King Durian."
     },
     {
-      "title": "Movement & Scrolling Alignment",
-      "content": "Scrolling Axis: Static single-screen container. Asset Orientation: Dropper moves horizontally at fixed Y; fruits fall vertically under 2D gravity. Physics Kinetics: Matter.js engine with restitution 0.2, friction 0.1, density scaling, and angular velocity.",
-      "summary": "Aiming, dropping, and camera orientation."
-    },
-    {
-      "title": "Visual Hierarchy & Layering",
-      "content": "Background Layer: Creamy pastel backdrop (#FDF6E3) with subtle wooden borders (#D4A373). Playfield Layer: Translucent glass-like container containing high-contrast vibrant fruits with kawaii faces that rotate with body angle. Overlay Layer: Dashed drop guide, danger line (flashing red when breached), floating score popups, Next Fruit badge, and Game Over modal.",
-      "summary": "Clear visual planes and hazard affordance."
-    },
-    {
-      "title": "Fairness Tools",
-      "content": "1. Next Fruit Preview badge. 2. Dashed vertical drop guideline clamped to container boundaries. 3. Evolution wheel/legend displaying all 11 fruit tiers in order. 4. Grace timer on danger line so bouncing fruits don't cause instant false defeats.",
-      "summary": "Assistance and visual cues for the player."
-    },
-    {
-      "title": "Juice & Game Feel",
-      "content": "Anticipation Juice: Fruit follows pointer with smooth horizontal interpolation and dashed guide. State Change Juice: Elastic scale-in spawn animation, floating +Score texts, and sparkling confetti particles. Impact Juice: Pitch-ascending Web Audio chimes on higher merges, celebratory fireworks on dual Watermelon fusions.",
-      "summary": "Visual and auditory polish."
-    },
-    {
-      "title": "Virtual Touch Controls Implementation",
-      "content": "Direct canvas touch drag and release tracking with touch-action: none. Responsive container scaling that fits mobile portrait viewports with comfortable touch margins.",
-      "summary": "Responsive touch controls for mobile screens."
+      "title": "Power-Up Systems",
+      "content": "1. Zero-G Anti-Gravity: Spawns safety ceiling at y=95, inverts gravity to float fruits upwards and shake mid-air, spawns purple/cyan ambient particles, allows clicking fruit to impulse towards twin, and safely settles with grace timer. 2. Magnet Beam: Targets the highest tier matching fruit pair and pulls them together across 90 frames with a glowing electric beam.",
+      "summary": "Anti-Gravity and Magnet abilities."
     }
   ]
 }

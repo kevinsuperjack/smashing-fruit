@@ -11,7 +11,8 @@ import {
   X,
   Trophy,
   Sparkles,
-  ChevronDown,
+  Zap,
+  Compass,
 } from 'lucide-react';
 import React, {useCallback, useEffect, useRef, useState} from 'react';
 import {
@@ -42,7 +43,7 @@ import {
 } from './utils/usePlayground';
 
 const BACKGROUND_MUSIC_URL = 'assets/audio/bgm_cozy_orchard.mp3';
-const HIGH_SCORE_STORAGE_KEY = 'juicydrop_highscore_v1';
+const HIGH_SCORE_STORAGE_KEY = 'juicydrop_highscore_v2';
 
 const ASSETS_MANIFEST: Record<string, string> = {
   cozy_wooden_backdrop: 'assets/images/cozy_wooden_backdrop.png',
@@ -59,7 +60,7 @@ const ASSETS_MANIFEST: Record<string, string> = {
   fruit_watermelon: 'assets/images/fruit_watermelon.png',
 };
 
-// Particle representation for juicy bursts
+// Particle representation for juicy bursts and zero-G / electric effects
 interface Particle {
   x: number;
   y: number;
@@ -71,9 +72,11 @@ interface Particle {
   life: number;
   maxLife: number;
   isSparkle?: boolean;
+  isZeroG?: boolean;
+  isElectric?: boolean;
 }
 
-// Floating score text popup
+// Floating score / banner text popup
 interface ScorePopup {
   x: number;
   y: number;
@@ -95,9 +98,17 @@ interface FruitEntity {
   targetScale: number;
   blinkTimer: number;
   isBlinking: boolean;
-  expression: 'happy' | 'bouncy' | 'shocked' | 'sleepy';
+  expression: 'happy' | 'bouncy' | 'shocked' | 'sleepy' | 'regal';
   expressionTimer: number;
   merged: boolean;
+}
+
+// Active Magnet pull state
+interface ActiveMagnet {
+  fruitAId: number;
+  fruitBId: number;
+  remainingFrames: number;
+  totalFrames: number;
 }
 
 export default function App() {
@@ -143,6 +154,12 @@ export default function App() {
   const [sfxMuted, setSfxMuted] = useState(false);
   const [musicMuted, setMusicMuted] = useState(false);
   const [totalDrops, setTotalDrops] = useState(0);
+
+  // Power-up States & Cooldowns
+  const [antiGravityCooldown, setAntiGravityCooldown] = useState<number>(0);
+  const [antiGravityActive, setAntiGravityActive] = useState<boolean>(false);
+  const [magnetCooldown, setMagnetCooldown] = useState<number>(0);
+  const [magnetActive, setMagnetActive] = useState<boolean>(false);
 
   // Next & Current Fruits in React state for HUD badges
   const [currentTier, setCurrentTier] = useState<number>(1);
@@ -216,7 +233,17 @@ export default function App() {
     Array<{fruitA: FruitEntity; fruitB: FruitEntity; midX: number; midY: number}>
   >([]);
 
-  // Weighted random dropper tier (1..5)
+  // Anti-Gravity & Magnet Physics Control Refs
+  const antiGravityTimerRef = useRef<number>(0);
+  const antiGravityCeilingRef = useRef<Matter.Body | null>(null);
+  const dangerGraceCooldownRef = useRef<number>(0);
+  const activeMagnetRef = useRef<ActiveMagnet | null>(null);
+
+  // Cooldown timers in seconds
+  const antiGravityCdTimerRef = useRef<number>(0);
+  const magnetCdTimerRef = useRef<number>(0);
+
+  // Weighted random dropper tier (Restricted to Tiers 1-5)
   const getRandomSpawnTier = useCallback(() => {
     const maxTier = Math.min(5, (getConfig('maxSpawnTier') as number) || 5);
     const weights = [40, 30, 18, 9, 3]; // Cherry, Strawberry, Grape, Dekopon, Persimmon
@@ -242,7 +269,7 @@ export default function App() {
           y,
           vx: Math.cos(angle) * speed,
           vy: Math.sin(angle) * speed - (isSparkle ? 3 : 1),
-          radius: isSparkle ? 3 + Math.random() * 4 : 4 + Math.random() * 8,
+          radius: isSparkle ? 3 + Math.random() * 5 : 4 + Math.random() * 8,
           color,
           alpha: 1,
           life: 0,
@@ -253,6 +280,25 @@ export default function App() {
     },
     [],
   );
+
+  // Spawn Zero-G particles
+  const spawnZeroGParticles = useCallback((count = 8) => {
+    const colors = ['#C084FC', '#38BDF8', '#E879F9', '#818CF8'];
+    for (let i = 0; i < count; i++) {
+      particlesRef.current.push({
+        x: jarX + 20 + Math.random() * (jarWidth - 40),
+        y: jarBottom - 20 - Math.random() * (jarBottom - jarTop - 50),
+        vx: (Math.random() - 0.5) * 1.5,
+        vy: -1.5 - Math.random() * 2.5,
+        radius: 3 + Math.random() * 4,
+        color: colors[Math.floor(Math.random() * colors.length)],
+        alpha: 0.9,
+        life: 0,
+        maxLife: 1.2 + Math.random() * 0.8,
+        isZeroG: true,
+      });
+    }
+  }, [jarBottom, jarRight, jarTop, jarWidth, jarX]);
 
   // Spawn Score Popup
   const spawnScorePopup = useCallback(
@@ -270,6 +316,93 @@ export default function App() {
     },
     [],
   );
+
+  // Powerup 1: Activate Anti-Gravity
+  const activateAntiGravity = useCallback(() => {
+    if (gameStateRef.current.status !== 'PLAYING') return;
+    if (antiGravityTimerRef.current > 0 || antiGravityCdTimerRef.current > 0) return;
+    if (!engineRef.current) return;
+
+    gameAudio.playPowerupChime();
+    antiGravityTimerRef.current = 5.0; // 5 seconds duration
+    antiGravityCdTimerRef.current = 15.0; // 15s cooldown
+    setAntiGravityActive(true);
+    setAntiGravityCooldown(15);
+
+    // Create temporary static horizontal ceiling rigid body at y = 95
+    const ceilingY = 95;
+    const ceiling = Matter.Bodies.rectangle(
+      canvasWidth / 2,
+      ceilingY,
+      jarWidth + 80,
+      30,
+      {isStatic: true, label: 'zero_g_ceiling', friction: 0.05, restitution: 0.5},
+    );
+    antiGravityCeilingRef.current = ceiling;
+    Matter.Composite.add(engineRef.current.world, ceiling);
+
+    // Initial zero-G burst
+    spawnZeroGParticles(25);
+    spawnScorePopup(canvasWidth / 2, 220, '🌀 ZERO-G ACTIVATED!', '#A855F7');
+  }, [canvasWidth, jarWidth, spawnScorePopup, spawnZeroGParticles]);
+
+  // Powerup 2: Activate Magnet
+  const activateMagnet = useCallback(() => {
+    if (gameStateRef.current.status !== 'PLAYING') return;
+    if (activeMagnetRef.current || magnetCdTimerRef.current > 0) return;
+    if (!engineRef.current) return;
+
+    // Scan all fruits inside the jar and find matching pairs
+    const tierMap = new Map<number, FruitEntity[]>();
+    fruitsRef.current.forEach((fruit) => {
+      if (!fruit.merged) {
+        const list = tierMap.get(fruit.tier) || [];
+        list.push(fruit);
+        tierMap.set(fruit.tier, list);
+      }
+    });
+
+    // Find highest tier with >= 2 fruits
+    let bestTier = -1;
+    for (let t = FRUIT_TIERS.length; t >= 1; t--) {
+      const list = tierMap.get(t);
+      if (list && list.length >= 2) {
+        bestTier = t;
+        break;
+      }
+    }
+
+    if (bestTier === -1) {
+      // No pairs found
+      gameAudio.playErrorBuzz();
+      spawnScorePopup(canvasWidth / 2, 350, 'No matching pairs found!', '#EF4444');
+      return;
+    }
+
+    const pairList = tierMap.get(bestTier)!;
+    const fruitA = pairList[0];
+    const fruitB = pairList[1];
+
+    activeMagnetRef.current = {
+      fruitAId: fruitA.body.id,
+      fruitBId: fruitB.body.id,
+      remainingFrames: 90,
+      totalFrames: 90,
+    };
+
+    magnetCdTimerRef.current = 12.0; // 12s cooldown
+    setMagnetCooldown(12);
+    setMagnetActive(true);
+
+    gameAudio.playArcadeLaser();
+    const tierConfig = FRUIT_TIERS[bestTier - 1];
+    spawnScorePopup(
+      (fruitA.body.position.x + fruitB.body.position.x) / 2,
+      (fruitA.body.position.y + fruitB.body.position.y) / 2,
+      `🧲 MAGNETIZING ${tierConfig.name.toUpperCase()}!`,
+      '#F59E0B',
+    );
+  }, [canvasWidth, spawnScorePopup]);
 
   // Drop current fruit into jar
   const dropFruit = useCallback(() => {
@@ -295,9 +428,8 @@ export default function App() {
     const dropY = dropperY;
 
     const restitution = (getConfig('fruitRestitution') as number) || 0.22;
-    const friction = (getConfig('fruitFriction') as number) || 0.08;
-    const densityScale =
-      (getConfig('fruitDensityMultiplier') as number) || 0.002;
+    const friction = tierConfig.friction ?? ((getConfig('fruitFriction') as number) || 0.08);
+    const densityScale = tierConfig.density ?? ((getConfig('fruitDensityMultiplier') as number) || 0.002);
 
     const body = Matter.Bodies.circle(dropX, dropY, radius, {
       restitution,
@@ -330,7 +462,7 @@ export default function App() {
     totalDropsRef.current += 1;
     setTotalDrops((prev) => prev + 1);
 
-    // Advance queue
+    // Advance queue (Restricted to Tiers 1-5)
     const nextT = nextTierRef.current;
     const newUpcoming = getRandomSpawnTier();
     currentTierRef.current = nextT;
@@ -341,7 +473,7 @@ export default function App() {
     lastDropTimeRef.current = now;
   }, [dropperY, jarRight, jarX, getRandomSpawnTier, isMenuOpen, isHowToPlayOpen, isEvolutionTreeOpen]);
 
-  // Direct keyboard listener for instant dropping and steering
+  // Direct keyboard listener for instant dropping, steering, and powerup shortcuts
   useEffect(() => {
     const handleDirectKeyDown = (e: KeyboardEvent) => {
       if (gameStateRef.current.status !== 'PLAYING') return;
@@ -354,12 +486,16 @@ export default function App() {
         targetDropperXRef.current = Math.max(jarX + 30, targetDropperXRef.current - 45);
       } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
         targetDropperXRef.current = Math.min(jarRight - 30, targetDropperXRef.current + 45);
+      } else if (e.key === 'z' || e.key === 'Z' || e.key === '1') {
+        activateAntiGravity();
+      } else if (e.key === 'm' || e.key === 'M' || e.key === '2') {
+        activateMagnet();
       }
     };
 
     window.addEventListener('keydown', handleDirectKeyDown, {passive: false});
     return () => window.removeEventListener('keydown', handleDirectKeyDown);
-  }, [dropFruit, isEvolutionTreeOpen, isHowToPlayOpen, isMenuOpen, jarRight, jarX]);
+  }, [dropFruit, activateAntiGravity, activateMagnet, isEvolutionTreeOpen, isHowToPlayOpen, isMenuOpen, jarRight, jarX]);
 
   // Initialize/Reset Game Session
   const initGame = useCallback(() => {
@@ -447,9 +583,19 @@ export default function App() {
     scorePopupsRef.current = [];
     mergeQueueRef.current = [];
     dangerTimerRef.current = 0;
+    dangerGraceCooldownRef.current = 0;
+    antiGravityTimerRef.current = 0;
+    antiGravityCdTimerRef.current = 0;
+    magnetCdTimerRef.current = 0;
+    antiGravityCeilingRef.current = null;
+    activeMagnetRef.current = null;
     totalDropsRef.current = 0;
     setTotalDrops(0);
-    lastDropTimeRef.current = performance.now() - 600; // Allow immediate first drop
+    setAntiGravityActive(false);
+    setAntiGravityCooldown(0);
+    setMagnetActive(false);
+    setMagnetCooldown(0);
+    lastDropTimeRef.current = performance.now() - 600;
 
     const t1 = getRandomSpawnTier();
     const t2 = getRandomSpawnTier();
@@ -502,12 +648,77 @@ export default function App() {
     }
   }, [gameState.status]);
 
-  // Direct canvas pointer event helpers for guaranteed fail-safe drop
+  // Tap-to-impulse during Zero-G or standard pointer handling
+  const checkZeroGTapImpulse = (tapX: number, tapY: number): boolean => {
+    if (antiGravityTimerRef.current <= 0) return false;
+
+    // Check if player clicked directly on any existing fruit inside the container
+    let clickedFruit: FruitEntity | null = null;
+    fruitsRef.current.forEach((fruit) => {
+      const radius = FRUIT_TIERS[fruit.tier - 1]?.radius || 30;
+      const dx = fruit.body.position.x - tapX;
+      const dy = fruit.body.position.y - tapY;
+      if (Math.hypot(dx, dy) <= radius + 10) {
+        clickedFruit = fruit;
+      }
+    });
+
+    if (clickedFruit) {
+      const f = clickedFruit as FruitEntity;
+      // Find nearest matching twin tier fruit
+      let nearestTwin: FruitEntity | null = null;
+      let minDist = Infinity;
+      fruitsRef.current.forEach((other) => {
+        if (other.body.id !== f.body.id && other.tier === f.tier && !other.merged) {
+          const d = Math.hypot(
+            other.body.position.x - f.body.position.x,
+            other.body.position.y - f.body.position.y,
+          );
+          if (d < minDist) {
+            minDist = d;
+            nearestTwin = other;
+          }
+        }
+      });
+
+      if (nearestTwin) {
+        const twin = nearestTwin as FruitEntity;
+        const dirX = twin.body.position.x - f.body.position.x;
+        const dirY = twin.body.position.y - f.body.position.y;
+        const len = Math.hypot(dirX, dirY) || 1;
+        const pushForce = 0.035 * f.body.mass;
+
+        Matter.Body.applyForce(f.body, f.body.position, {
+          x: (dirX / len) * pushForce,
+          y: (dirY / len) * pushForce,
+        });
+
+        // Twin counter impulse
+        Matter.Body.applyForce(twin.body, twin.body.position, {
+          x: (-dirX / len) * pushForce * 0.5,
+          y: (-dirY / len) * pushForce * 0.5,
+        });
+
+        gameAudio.playConfirmSelect();
+        spawnJuiceSplash(f.body.position.x, f.body.position.y, '#C084FC', 14, true);
+        return true;
+      }
+    }
+    return false;
+  };
+
+  // Direct canvas pointer event helpers
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (gameState.status !== 'PLAYING') return;
     const rect = e.currentTarget.getBoundingClientRect();
     if (rect.width > 0) {
       const x = ((e.clientX - rect.left) / rect.width) * canvasWidth;
+      const y = ((e.clientY - rect.top) / rect.height) * canvasHeight;
+
+      if (checkZeroGTapImpulse(x, y)) {
+        return;
+      }
+
       targetDropperXRef.current = x;
       dropperXRef.current = x;
     }
@@ -528,6 +739,13 @@ export default function App() {
     const rect = e.currentTarget.getBoundingClientRect();
     if (rect.width > 0) {
       const x = ((e.clientX - rect.left) / rect.width) * canvasWidth;
+      const y = ((e.clientY - rect.top) / rect.height) * canvasHeight;
+
+      if (checkZeroGTapImpulse(x, y)) {
+        isPointerDownRef.current = false;
+        return;
+      }
+
       targetDropperXRef.current = x;
     }
     isPointerDownRef.current = false;
@@ -542,6 +760,114 @@ export default function App() {
 
     const input = inputRef.current;
     const now = performance.now();
+    const defaultGravity = (getConfig('gravityY') as number) || 1.5;
+
+    // 0. Update Cooldowns and Anti-Gravity / Magnet Timers
+    if (antiGravityCdTimerRef.current > 0) {
+      antiGravityCdTimerRef.current = Math.max(0, antiGravityCdTimerRef.current - deltaTime);
+      setAntiGravityCooldown(Math.ceil(antiGravityCdTimerRef.current));
+    }
+
+    if (magnetCdTimerRef.current > 0) {
+      magnetCdTimerRef.current = Math.max(0, magnetCdTimerRef.current - deltaTime);
+      setMagnetCooldown(Math.ceil(magnetCdTimerRef.current));
+    }
+
+    // Anti-Gravity Physics Phase & Gravity Adjustment
+    if (antiGravityTimerRef.current > 0) {
+      antiGravityTimerRef.current -= deltaTime;
+      if (engineRef.current) {
+        if (antiGravityTimerRef.current > 2.0) {
+          // First 3 seconds: negative gravity -0.3
+          engineRef.current.world.gravity.y = -0.3;
+        } else {
+          // Last 2 seconds: slight gravity 0.05
+          engineRef.current.world.gravity.y = 0.05;
+        }
+
+        // Apply subtle random horizontal drift velocity to all floating fruits
+        fruitsRef.current.forEach((fruit) => {
+          Matter.Body.applyForce(fruit.body, fruit.body.position, {
+            x: (Math.random() - 0.5) * 0.0006 * fruit.body.mass,
+            y: (Math.random() - 0.5) * 0.0003 * fruit.body.mass,
+          });
+        });
+      }
+
+      // Zero-G visual particle stream
+      if (Math.random() < 0.35) {
+        spawnZeroGParticles(2);
+      }
+
+      if (antiGravityTimerRef.current <= 0) {
+        // Anti-Gravity Ended: Remove ceiling, restore normal gravity
+        if (engineRef.current) {
+          if (antiGravityCeilingRef.current) {
+            Matter.Composite.remove(engineRef.current.world, antiGravityCeilingRef.current);
+            antiGravityCeilingRef.current = null;
+          }
+          engineRef.current.world.gravity.y = defaultGravity;
+        }
+        setAntiGravityActive(false);
+        // Suppress danger line for 2.0s after settling
+        dangerGraceCooldownRef.current = 2.0;
+        spawnScorePopup(canvasWidth / 2, 220, 'GRAVITY RESTORED', '#38BDF8');
+      }
+    } else {
+      if (dangerGraceCooldownRef.current > 0) {
+        dangerGraceCooldownRef.current = Math.max(0, dangerGraceCooldownRef.current - deltaTime);
+      }
+    }
+
+    // Active Magnet Pull Simulation
+    if (activeMagnetRef.current && engineRef.current) {
+      const mag = activeMagnetRef.current;
+      const fruitA = fruitsRef.current.get(mag.fruitAId);
+      const fruitB = fruitsRef.current.get(mag.fruitBId);
+
+      if (fruitA && fruitB && !fruitA.merged && !fruitB.merged) {
+        const posA = fruitA.body.position;
+        const posB = fruitB.body.position;
+        const dx = posB.x - posA.x;
+        const dy = posB.y - posA.y;
+        const dist = Math.hypot(dx, dy);
+
+        if (dist > 15) {
+          const forceMag = 0.0035 * (1 + (mag.totalFrames - mag.remainingFrames) / mag.totalFrames * 2.5);
+          const fx = (dx / dist) * forceMag * fruitA.body.mass;
+          const fy = (dy / dist) * forceMag * fruitA.body.mass;
+
+          Matter.Body.applyForce(fruitA.body, posA, {x: fx, y: fy});
+          Matter.Body.applyForce(fruitB.body, posB, {x: -fx, y: -fy});
+        }
+
+        // Magnet electric arc particles
+        if (Math.random() < 0.6) {
+          const t = Math.random();
+          particlesRef.current.push({
+            x: posA.x + dx * t + (Math.random() - 0.5) * 16,
+            y: posA.y + dy * t + (Math.random() - 0.5) * 16,
+            vx: (Math.random() - 0.5) * 2,
+            vy: (Math.random() - 0.5) * 2,
+            radius: 2 + Math.random() * 3,
+            color: Math.random() < 0.5 ? '#38BDF8' : '#F59E0B',
+            alpha: 1,
+            life: 0,
+            maxLife: 0.3,
+            isElectric: true,
+          });
+        }
+
+        mag.remainingFrames -= 1;
+        if (mag.remainingFrames <= 0) {
+          activeMagnetRef.current = null;
+          setMagnetActive(false);
+        }
+      } else {
+        activeMagnetRef.current = null;
+        setMagnetActive(false);
+      }
+    }
 
     // 1. Process Input for Dropper Position
     if (input) {
@@ -618,7 +944,9 @@ export default function App() {
         const pointsEarned = currentTierConfig ? currentTierConfig.points : 2;
 
         // Audio juice
-        if (currentTierNum >= 10) {
+        if (currentTierNum >= 12) {
+          gameAudio.playVictoryFanfare();
+        } else if (currentTierNum >= 9) {
           gameAudio.playLevelUpStinger();
         } else if (currentTierNum >= 5) {
           gameAudio.playPowerupChime();
@@ -629,22 +957,20 @@ export default function App() {
         // Particle Burst
         spawnJuiceSplash(midX, midY, currentTierConfig.color, 24);
 
-        // Check if merging 2 Watermelons (Tier 11) -> Win / Ultimate explosion
-        if (currentTierNum === 11) {
-          const victoryPoints = 4096;
+        // Check if merging 2 King Durians (Tier 13) -> Pinnacle Ultimate Victory!
+        if (currentTierNum >= 13) {
+          const victoryPoints = 10000;
           spawnScorePopup(
             midX,
             midY,
-            `+${victoryPoints} ULTIMATE!`,
-            '#F59E0B',
+            `+${victoryPoints} 👑 KING DURIAN PINNACLE!`,
+            '#9EF01A',
           );
-          spawnJuiceSplash(midX, midY, '#FFD700', 44, true);
+          spawnJuiceSplash(midX, midY, '#FFD700', 60, true);
           gameAudio.playChiptuneExplosion();
 
           updateScoreWithHighScore(victoryPoints);
-          if (getConfig('twoWatermelonsVictory')) {
-            setGameState((prev) => ({...prev, status: 'VICTORY'}));
-          }
+          setGameState((prev) => ({...prev, status: 'VICTORY'}));
           return;
         }
 
@@ -653,9 +979,8 @@ export default function App() {
         const nextTierConfig = FRUIT_TIERS[nextTierNum - 1];
         const radius = nextTierConfig.radius;
         const restitution = (getConfig('fruitRestitution') as number) || 0.22;
-        const friction = (getConfig('fruitFriction') as number) || 0.08;
-        const densityScale =
-          (getConfig('fruitDensityMultiplier') as number) || 0.002;
+        const friction = nextTierConfig.friction ?? ((getConfig('fruitFriction') as number) || 0.08);
+        const densityScale = nextTierConfig.density ?? ((getConfig('fruitDensityMultiplier') as number) || 0.002);
 
         // Clamp spawn position safely within the jar enclosure
         const clampedSpawnX = Math.max(
@@ -692,8 +1017,8 @@ export default function App() {
           targetScale: 1.0,
           blinkTimer: 1 + Math.random() * 3,
           isBlinking: false,
-          expression: 'bouncy',
-          expressionTimer: 0.8,
+          expression: nextTierNum === 13 ? 'regal' : 'bouncy',
+          expressionTimer: 1.0,
           merged: false,
         };
 
@@ -703,7 +1028,7 @@ export default function App() {
         spawnScorePopup(
           clampedSpawnX,
           clampedSpawnY,
-          `+${pointsEarned}`,
+          `+${pointsEarned} ${nextTierConfig.name}!`,
           nextTierConfig.color,
         );
 
@@ -714,6 +1039,8 @@ export default function App() {
 
     // 4. Update Fruits Animations, Expressions & Danger Line Check
     let settledBreach = false;
+    const isAntiGravityRunning = antiGravityTimerRef.current > 0 || dangerGraceCooldownRef.current > 0;
+
     fruitsRef.current.forEach((fruit) => {
       // Elastic scale-in animation
       if (fruit.renderScale < fruit.targetScale) {
@@ -739,29 +1066,32 @@ export default function App() {
       if (fruit.expressionTimer > 0) {
         fruit.expressionTimer -= deltaTime;
         if (fruit.expressionTimer <= 0) {
-          fruit.expression = 'happy';
+          fruit.expression = fruit.tier === 13 ? 'regal' : 'happy';
         }
       }
 
       // Check danger line condition for settled fruits (>2.0s age and low kinetic velocity)
-      const ageSeconds = (now - fruit.spawnTime) / 1000;
-      const vx = fruit.body.velocity.x;
-      const vy = fruit.body.velocity.y;
-      const speed = Math.hypot(vx, vy);
-      const fruitRadius = FRUIT_TIERS[fruit.tier - 1]?.radius || 20;
-      const topY = fruit.body.position.y - fruitRadius;
+      // Danger line is strictly suppressed during Anti-Gravity and its cooldown grace
+      if (!isAntiGravityRunning) {
+        const ageSeconds = (now - fruit.spawnTime) / 1000;
+        const vx = fruit.body.velocity.x;
+        const vy = fruit.body.velocity.y;
+        const speed = Math.hypot(vx, vy);
+        const fruitRadius = FRUIT_TIERS[fruit.tier - 1]?.radius || 20;
+        const topY = fruit.body.position.y - fruitRadius;
 
-      // Fruit is settled, older than 2s, and stacked over danger line
-      if (ageSeconds > 2.0 && speed < 1.5 && topY < dangerLineY) {
-        settledBreach = true;
-        fruit.expression = 'shocked';
-        fruit.expressionTimer = 0.5;
+        // Fruit is settled, older than 2s, and stacked over danger line
+        if (ageSeconds > 2.0 && speed < 1.5 && topY < dangerLineY) {
+          settledBreach = true;
+          fruit.expression = 'shocked';
+          fruit.expressionTimer = 0.5;
+        }
       }
     });
 
-    // 5. Danger Line Accumulator
+    // 5. Danger Line Accumulator (Suppressed during Anti-Gravity)
     const dangerGrace = (getConfig('dangerGraceSeconds') as number) || 2.5;
-    if (settledBreach) {
+    if (settledBreach && !isAntiGravityRunning) {
       dangerTimerRef.current += deltaTime;
       if (dangerTimerRef.current >= dangerGrace) {
         setGameState((prev) => ({...prev, status: 'GAME_OVER'}));
@@ -778,7 +1108,11 @@ export default function App() {
       const p = particlesRef.current[i];
       p.x += p.vx;
       p.y += p.vy;
-      p.vy += 0.18; // particle gravity
+      if (!p.isZeroG && !p.isElectric) {
+        p.vy += 0.18; // standard particle gravity
+      } else if (p.isZeroG) {
+        p.vy -= 0.05; // zero-G particle float up
+      }
       p.vx *= 0.98;
       p.life += deltaTime;
       p.alpha = Math.max(0, 1 - p.life / p.maxLife);
@@ -814,7 +1148,7 @@ export default function App() {
     const eyeOffsetY = -2;
 
     // Cheeks
-    ctx.fillStyle = 'rgba(255, 120, 140, 0.4)';
+    ctx.fillStyle = 'rgba(255, 120, 140, 0.45)';
     ctx.beginPath();
     ctx.arc(-eyeOffsetX - 3, eyeOffsetY + 5, 4, 0, Math.PI * 2);
     ctx.arc(eyeOffsetX + 3, eyeOffsetY + 5, 4, 0, Math.PI * 2);
@@ -838,6 +1172,19 @@ export default function App() {
       ctx.beginPath();
       ctx.arc(-eyeOffsetX, eyeOffsetY, 3.5, 0, Math.PI * 2);
       ctx.arc(eyeOffsetX, eyeOffsetY, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (fruit.expression === 'regal') {
+      // Regal confident sparkling eyes
+      ctx.beginPath();
+      ctx.arc(-eyeOffsetX, eyeOffsetY, 3.2, 0, Math.PI * 2);
+      ctx.arc(eyeOffsetX, eyeOffsetY, 3.2, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Sparkle highlights
+      ctx.fillStyle = '#FFD700';
+      ctx.beginPath();
+      ctx.arc(-eyeOffsetX - 1, eyeOffsetY - 1, 1.4, 0, Math.PI * 2);
+      ctx.arc(eyeOffsetX - 1, eyeOffsetY - 1, 1.4, 0, Math.PI * 2);
       ctx.fill();
     } else {
       // Happy eyes with cute sparkle pupil
@@ -864,7 +1211,7 @@ export default function App() {
       ctx.arc(0, eyeOffsetY + 6, 3.5, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-    } else if (fruit.expression === 'bouncy') {
+    } else if (fruit.expression === 'bouncy' || fruit.expression === 'regal') {
       // Big open happy smile :D
       ctx.beginPath();
       ctx.arc(0, eyeOffsetY + 3, 4, 0, Math.PI);
@@ -879,6 +1226,163 @@ export default function App() {
     }
 
     ctx.restore();
+  };
+
+  // Procedural Drawing for Cucumber, King Durian, or Sprite Fallbacks
+  const drawFruitBody = (
+    ctx: CanvasRenderingContext2D,
+    tierConfig: FruitTier,
+    radius: number,
+  ) => {
+    // 1. Procedural Cucumber (Tier 6)
+    if (tierConfig.tier === 6) {
+      // Base cucumber green circle
+      ctx.fillStyle = '#38B000';
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Dark green longitudinal curved stripes
+      ctx.strokeStyle = '#1F7A00';
+      ctx.lineWidth = Math.max(2, radius * 0.08);
+      ctx.lineCap = 'round';
+
+      const stripeOffsets = [-0.65, -0.32, 0, 0.32, 0.65];
+      stripeOffsets.forEach((factor) => {
+        ctx.beginPath();
+        const startX = radius * factor * 0.85;
+        const cpX = radius * factor * 1.05;
+        ctx.moveTo(startX, -radius * 0.85);
+        ctx.quadraticCurveTo(cpX, 0, startX, radius * 0.85);
+        ctx.stroke();
+      });
+
+      // Subtle yellow-green bumpy dots
+      ctx.fillStyle = '#70E000';
+      const bumpPoints = [
+        {x: -radius * 0.45, y: -radius * 0.4},
+        {x: -radius * 0.15, y: -radius * 0.6},
+        {x: radius * 0.35, y: -radius * 0.45},
+        {x: -radius * 0.5, y: radius * 0.25},
+        {x: radius * 0.4, y: radius * 0.3},
+        {x: -radius * 0.2, y: radius * 0.55},
+        {x: radius * 0.15, y: radius * 0.6},
+      ];
+      bumpPoints.forEach((pt) => {
+        ctx.beginPath();
+        ctx.arc(pt.x, pt.y, Math.max(1.5, radius * 0.05), 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      // Outer crisp outline
+      ctx.strokeStyle = '#195703';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      return;
+    }
+
+    // 2. Procedural King Durian (Tier 13)
+    if (tierConfig.tier === 13) {
+      // Outer spiky circumference: ring of spiky golden-yellow/green triangles
+      const spikeCount = 20;
+      const innerR = radius * 0.88;
+      const outerR = radius * 1.14;
+
+      ctx.save();
+      ctx.fillStyle = '#E9D846';
+      ctx.strokeStyle = '#70B800';
+      ctx.lineWidth = 2.5;
+
+      for (let i = 0; i < spikeCount; i++) {
+        const a1 = (i / spikeCount) * Math.PI * 2;
+        const aMid = ((i + 0.5) / spikeCount) * Math.PI * 2;
+        const a2 = ((i + 1) / spikeCount) * Math.PI * 2;
+
+        const x1 = Math.cos(a1) * innerR;
+        const y1 = Math.sin(a1) * innerR;
+        const xTip = Math.cos(aMid) * outerR;
+        const yTip = Math.sin(aMid) * outerR;
+        const x2 = Math.cos(a2) * innerR;
+        const y2 = Math.sin(a2) * innerR;
+
+        ctx.beginPath();
+        ctx.moveTo(x1, y1);
+        ctx.lineTo(xTip, yTip);
+        ctx.lineTo(x2, y2);
+        ctx.closePath();
+        ctx.fillStyle = i % 2 === 0 ? '#E9D846' : '#9EF01A';
+        ctx.fill();
+        ctx.stroke();
+      }
+      ctx.restore();
+
+      // Main golden-green body gradient
+      const grad = ctx.createRadialGradient(-radius * 0.2, -radius * 0.2, radius * 0.1, 0, 0, radius);
+      grad.addColorStop(0, '#D4F754');
+      grad.addColorStop(0.6, '#9EF01A');
+      grad.addColorStop(1, '#539E00');
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = '#3A7000';
+      ctx.lineWidth = 4;
+      ctx.stroke();
+
+      // Royal Golden Crown on Top
+      ctx.save();
+      ctx.translate(0, -radius * 0.82);
+      const crownW = radius * 0.7;
+      const crownH = radius * 0.42;
+
+      // Crown base fill
+      ctx.fillStyle = '#FFD700';
+      ctx.strokeStyle = '#B45309';
+      ctx.lineWidth = 2.5;
+
+      ctx.beginPath();
+      ctx.moveTo(-crownW / 2, crownH / 2);
+      ctx.lineTo(-crownW / 2, -crownH / 4);
+      ctx.lineTo(-crownW / 4, crownH / 8);
+      ctx.lineTo(0, -crownH / 2);
+      ctx.lineTo(crownW / 4, crownH / 8);
+      ctx.lineTo(crownW / 2, -crownH / 4);
+      ctx.lineTo(crownW / 2, crownH / 2);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Ruby jewels on crown peaks
+      ctx.fillStyle = '#E63946';
+      [-crownW / 2, 0, crownW / 2].forEach((gemX, idx) => {
+        const gemY = idx === 1 ? -crownH / 2 : -crownH / 4;
+        ctx.beginPath();
+        ctx.arc(gemX, gemY, radius * 0.055, 0, Math.PI * 2);
+        ctx.fill();
+      });
+
+      ctx.restore();
+      return;
+    }
+
+    // 3. Standard sprite or geometric fallback for other tiers
+    const img = assets[tierConfig.assetKey];
+    if (img && img.complete && img.naturalWidth > 0) {
+      const drawH = radius * 2.15;
+      const drawW = drawH * tierConfig.aspectRatio;
+      ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
+    } else {
+      ctx.fillStyle = tierConfig.color;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.strokeStyle = '#FFFFFF';
+      ctx.lineWidth = 3;
+      ctx.stroke();
+    }
   };
 
   // Main Draw Pipeline
@@ -915,6 +1419,23 @@ export default function App() {
     ctx.strokeStyle = THEME.woodBorder;
     ctx.lineWidth = 8;
     ctx.stroke();
+
+    // Zero-G Cosmic Glow tint inside jar when Anti-Gravity is active
+    if (antiGravityTimerRef.current > 0) {
+      const gAlpha = 0.15 + 0.08 * Math.sin(performance.now() * 0.008);
+      ctx.fillStyle = `rgba(168, 85, 247, ${gAlpha})`;
+      ctx.beginPath();
+      ctx.roundRect(jarX, jarTop, jarWidth, jarBottom - jarTop, [0, 0, 36, 36]);
+      ctx.fill();
+
+      // Zero-G ceiling line indicator
+      ctx.strokeStyle = '#A855F7';
+      ctx.lineWidth = 4;
+      ctx.beginPath();
+      ctx.moveTo(jarX, 95);
+      ctx.lineTo(jarRight, 95);
+      ctx.stroke();
+    }
 
     // Wooden Jar Rim and Outer Trim
     ctx.strokeStyle = THEME.woodDark;
@@ -955,7 +1476,7 @@ export default function App() {
     ctx.save();
     const dangerGrace = (getConfig('dangerGraceSeconds') as number) || 2.5;
     const dangerRatio = Math.min(1, dangerTimerRef.current / dangerGrace);
-    const isDangerActive = dangerTimerRef.current > 0.05;
+    const isDangerActive = dangerTimerRef.current > 0.05 && antiGravityTimerRef.current <= 0 && dangerGraceCooldownRef.current <= 0;
 
     ctx.lineWidth = isDangerActive ? 3.5 : 2;
     ctx.setLineDash([8, 8]);
@@ -986,34 +1507,76 @@ export default function App() {
     }
     ctx.restore();
 
+    // 3.5 Magnet Electric Laser Beam Rendering
+    if (activeMagnetRef.current) {
+      const mag = activeMagnetRef.current;
+      const fA = fruitsRef.current.get(mag.fruitAId);
+      const fB = fruitsRef.current.get(mag.fruitBId);
+
+      if (fA && fB) {
+        ctx.save();
+        const pA = fA.body.position;
+        const pB = fB.body.position;
+
+        // Outer neon glow beam
+        ctx.strokeStyle = 'rgba(6, 182, 212, 0.85)';
+        ctx.lineWidth = 10 + Math.sin(performance.now() * 0.03) * 4;
+        ctx.beginPath();
+        ctx.moveTo(pA.x, pA.y);
+        ctx.lineTo(pB.x, pB.y);
+        ctx.stroke();
+
+        // Inner electric core beam
+        ctx.strokeStyle = '#FFFFFF';
+        ctx.lineWidth = 4;
+        ctx.beginPath();
+        ctx.moveTo(pA.x, pA.y);
+        ctx.lineTo(pB.x, pB.y);
+        ctx.stroke();
+
+        // Sinuous electric arcs
+        ctx.strokeStyle = '#F59E0B';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        const segs = 8;
+        ctx.moveTo(pA.x, pA.y);
+        for (let i = 1; i < segs; i++) {
+          const t = i / segs;
+          const mx = pA.x + (pB.x - pA.x) * t;
+          const my = pA.y + (pB.y - pA.y) * t;
+          const offset = (Math.sin(performance.now() * 0.05 + i * 2) * 12) * (1 - Math.abs(t - 0.5) * 2);
+          ctx.lineTo(mx - (pB.y - pA.y) / Math.hypot(pB.x - pA.x, pB.y - pA.y) * offset, my + (pB.x - pA.x) / Math.hypot(pB.x - pA.x, pB.y - pA.y) * offset);
+        }
+        ctx.lineTo(pB.x, pB.y);
+        ctx.stroke();
+
+        // Magnetic rings around both fruit centers
+        [pA, pB].forEach((pt) => {
+          ctx.strokeStyle = 'rgba(245, 158, 11, 0.9)';
+          ctx.lineWidth = 3;
+          ctx.beginPath();
+          ctx.arc(pt.x, pt.y, 20 + Math.sin(performance.now() * 0.02) * 8, 0, Math.PI * 2);
+          ctx.stroke();
+        });
+
+        ctx.restore();
+      }
+    }
+
     // 4. Render Active Physics Fruits
     fruitsRef.current.forEach((fruit) => {
       const {x, y} = fruit.body.position;
       const angle = fruit.body.angle;
       const tierConfig = FRUIT_TIERS[fruit.tier - 1] || FRUIT_TIERS[0];
       const radius = tierConfig.radius;
-      const img = assets[tierConfig.assetKey];
 
       ctx.save();
       ctx.translate(x, y);
       ctx.rotate(angle);
       ctx.scale(fruit.renderScale, fruit.renderScale);
 
-      // Render fruit sprite or fallback circle
-      if (img && img.complete && img.naturalWidth > 0) {
-        // Draw with correct aspect ratio maintaining centered radius box
-        const drawH = radius * 2.15;
-        const drawW = drawH * tierConfig.aspectRatio;
-        ctx.drawImage(img, -drawW / 2, -drawH / 2, drawW, drawH);
-      } else {
-        ctx.fillStyle = tierConfig.color;
-        ctx.beginPath();
-        ctx.arc(0, 0, radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-      }
+      // Render fruit body (procedural or sprite)
+      drawFruitBody(ctx, tierConfig, radius);
 
       // Draw cute kawaii face over fruit
       drawFruitFace(ctx, radius, fruit);
@@ -1027,7 +1590,6 @@ export default function App() {
         FRUIT_TIERS[currentTierRef.current - 1] || FRUIT_TIERS[0];
       const radius = activeTierConfig.radius;
       const curDropperX = dropperXRef.current;
-      const activeImg = assets[activeTierConfig.assetKey];
       const timeSinceDrop = performance.now() - lastDropTimeRef.current;
       const cooldown = (getConfig('dropCooldownMs') as number) || 450;
       const readyProgress = Math.min(1, timeSinceDrop / cooldown);
@@ -1069,19 +1631,8 @@ export default function App() {
         ctx.stroke();
       }
 
-      if (activeImg && activeImg.complete && activeImg.naturalWidth > 0) {
-        const drawH = radius * 2.15;
-        const drawW = drawH * activeTierConfig.aspectRatio;
-        ctx.drawImage(activeImg, -drawW / 2, -drawH / 2, drawW, drawH);
-      } else {
-        ctx.fillStyle = activeTierConfig.color;
-        ctx.beginPath();
-        ctx.arc(0, 0, radius, 0, Math.PI * 2);
-        ctx.fill();
-        ctx.strokeStyle = '#FFFFFF';
-        ctx.lineWidth = 3;
-        ctx.stroke();
-      }
+      // Draw held fruit body
+      drawFruitBody(ctx, activeTierConfig, radius);
 
       // Cute face on held dropper fruit
       const fakeHeldFruit: FruitEntity = {
@@ -1093,7 +1644,7 @@ export default function App() {
         targetScale: 1,
         blinkTimer: 0,
         isBlinking: false,
-        expression: isReady ? 'happy' : 'sleepy',
+        expression: isReady ? (currentTierRef.current === 13 ? 'regal' : 'happy') : 'sleepy',
         expressionTimer: 0,
         merged: false,
       };
@@ -1120,6 +1671,12 @@ export default function App() {
         ctx.rotate(p.life * 5);
         ctx.fillRect(-p.radius, -p.radius / 3, p.radius * 2, (p.radius * 2) / 3);
         ctx.fillRect(-p.radius / 3, -p.radius, (p.radius * 2) / 3, p.radius * 2);
+      } else if (p.isZeroG) {
+        // Glowing cosmic orb
+        ctx.arc(p.x, p.y, Math.max(0.5, p.radius), 0, Math.PI * 2);
+        ctx.shadowColor = p.color;
+        ctx.shadowBlur = 8;
+        ctx.fill();
       } else {
         ctx.arc(p.x, p.y, Math.max(0.5, p.radius), 0, Math.PI * 2);
         ctx.fill();
@@ -1210,41 +1767,41 @@ export default function App() {
         isMuted={musicMuted}
       />
 
-      {/* TOP DEDICATED HUD BAR (Pointer Events: Buttons are interactive, bar does not block canvas) */}
-      <header className="w-full bg-[#EAD8C0] border-b-2 border-[#C89666] shadow-sm px-3 py-1.5 z-20 shrink-0 flex items-center justify-between gap-2 max-w-2xl mx-auto pointer-events-auto">
+      {/* TOP DEDICATED HUD BAR */}
+      <header className="w-full bg-[#EAD8C0] border-b-2 border-[#C89666] shadow-sm px-2.5 py-1.5 z-20 shrink-0 flex items-center justify-between gap-1.5 max-w-2xl mx-auto pointer-events-auto">
         {/* Left: Score & High Score */}
-        <div className="flex items-center gap-3">
-          <div className="bg-[#FAF3E7] px-3 py-1 rounded-xl border border-[#D4A373] shadow-inner flex flex-col items-start min-w-[70px]">
-            <span className="text-[10px] uppercase font-extrabold text-[#9A6B42] leading-none">
+        <div className="flex items-center gap-2">
+          <div className="bg-[#FAF3E7] px-2.5 py-1 rounded-xl border border-[#D4A373] shadow-inner flex flex-col items-start min-w-[64px]">
+            <span className="text-[9px] uppercase font-extrabold text-[#9A6B42] leading-none">
               SCORE
             </span>
-            <span className="text-base md:text-lg font-black text-[#5C3A21] leading-tight">
+            <span className="text-sm md:text-base font-black text-[#5C3A21] leading-tight">
               {gameState.score}
             </span>
           </div>
 
-          <div className="hidden sm:flex bg-[#FAF3E7] px-3 py-1 rounded-xl border border-[#D4A373] shadow-inner flex-col items-start min-w-[70px]">
-            <span className="text-[10px] uppercase font-extrabold text-[#9A6B42] leading-none flex items-center gap-1">
-              <Trophy size={10} className="text-[#F59E0B]" /> BEST
+          <div className="hidden xs:flex bg-[#FAF3E7] px-2.5 py-1 rounded-xl border border-[#D4A373] shadow-inner flex-col items-start min-w-[64px]">
+            <span className="text-[9px] uppercase font-extrabold text-[#9A6B42] leading-none flex items-center gap-1">
+              <Trophy size={9} className="text-[#F59E0B]" /> BEST
             </span>
-            <span className="text-base md:text-lg font-black text-[#8A5836] leading-tight">
+            <span className="text-sm md:text-base font-black text-[#8A5836] leading-tight">
               {Math.max(highScore, gameState.score)}
             </span>
           </div>
         </div>
 
         {/* Center: Next Fruit Badge */}
-        <div className="flex items-center gap-2 bg-[#FAF3E7] px-3 py-1 rounded-2xl border border-[#D4A373] shadow-sm">
+        <div className="flex items-center gap-1.5 bg-[#FAF3E7] px-2.5 py-1 rounded-2xl border border-[#D4A373] shadow-sm">
           <div className="flex flex-col items-center">
-            <span className="text-[9px] uppercase font-extrabold text-[#9A6B42] leading-none">
+            <span className="text-[8px] uppercase font-extrabold text-[#9A6B42] leading-none">
               NEXT
             </span>
-            <span className="text-xs font-bold text-[#4A2810]">
+            <span className="text-[11px] font-bold text-[#4A2810] max-w-[65px] truncate">
               {nextFruitConfig.name}
             </span>
           </div>
           <div
-            className="w-8 h-8 rounded-full flex items-center justify-center p-0.5 border-2 shadow-sm"
+            className="w-7 h-7 rounded-full flex items-center justify-center p-0.5 border shadow-sm"
             style={{
               borderColor: nextFruitConfig.color,
               backgroundColor: '#FFFFFF',
@@ -1257,28 +1814,69 @@ export default function App() {
               />
             ) : (
               <div
-                className="w-5 h-5 rounded-full"
+                className="w-4 h-4 rounded-full"
                 style={{backgroundColor: nextFruitConfig.color}}
               />
             )}
           </div>
         </div>
 
-        {/* Right: Evolution Guide & Menu Buttons */}
+        {/* Powerups: Anti-Gravity & Magnet Action Buttons */}
         <div className="flex items-center gap-1.5">
+          {/* Anti-Gravity Powerup Button */}
+          <button
+            onClick={activateAntiGravity}
+            disabled={antiGravityCooldown > 0 || antiGravityActive || gameState.status !== 'PLAYING'}
+            title="Zero-G Anti-Gravity (Z / 1)"
+            className={`h-9 px-2.5 rounded-xl border font-bold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-sm active:scale-95 ${
+              antiGravityActive
+                ? 'bg-purple-600 text-white border-purple-400 animate-pulse ring-2 ring-purple-300'
+                : antiGravityCooldown > 0
+                ? 'bg-purple-100/60 text-purple-400 border-purple-200 cursor-not-allowed'
+                : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-300 hover:border-purple-400'
+            }`}>
+            <Compass size={15} className={antiGravityActive ? 'animate-spin' : 'text-purple-600'} />
+            <span className="font-extrabold text-[11px]">
+              {antiGravityActive
+                ? `${antiGravityTimerRef.current.toFixed(0)}s`
+                : antiGravityCooldown > 0
+                ? `${antiGravityCooldown}s`
+                : 'Zero-G'}
+            </span>
+          </button>
+
+          {/* Magnet Powerup Button */}
+          <button
+            onClick={activateMagnet}
+            disabled={magnetCooldown > 0 || magnetActive || gameState.status !== 'PLAYING'}
+            title="Magnet Powerup (M / 2)"
+            className={`h-9 px-2.5 rounded-xl border font-bold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-sm active:scale-95 ${
+              magnetActive
+                ? 'bg-amber-500 text-white border-amber-300 animate-pulse ring-2 ring-amber-300'
+                : magnetCooldown > 0
+                ? 'bg-amber-100/60 text-amber-400 border-amber-200 cursor-not-allowed'
+                : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300 hover:border-amber-400'
+            }`}>
+            <Zap size={15} className="text-amber-600" />
+            <span className="font-extrabold text-[11px]">
+              {magnetActive ? 'Pull!' : magnetCooldown > 0 ? `${magnetCooldown}s` : 'Magnet'}
+            </span>
+          </button>
+
+          {/* Evolution Guide */}
           <button
             onClick={() => setIsEvolutionTreeOpen(true)}
             aria-label="Fruit Evolution Guide"
-            className="w-10 h-10 min-w-[40px] min-h-[40px] rounded-xl bg-[#FAF3E7] hover:bg-[#F3E3CF] active:scale-95 text-[#5C3A21] border border-[#D4A373] shadow-sm flex items-center justify-center transition-all cursor-pointer">
-            <Sparkles size={18} className="text-[#F59E0B]" />
+            className="w-9 h-9 min-w-[36px] min-h-[36px] rounded-xl bg-[#FAF3E7] hover:bg-[#F3E3CF] active:scale-95 text-[#5C3A21] border border-[#D4A373] shadow-sm flex items-center justify-center transition-all cursor-pointer">
+            <Sparkles size={16} className="text-[#F59E0B]" />
           </button>
 
+          {/* Menu */}
           <button
             onClick={() => setIsMenuOpen(true)}
             aria-label="Open Menu"
-            className="px-3 h-10 min-w-[48px] min-h-[48px] rounded-xl bg-[#8C5832] hover:bg-[#724524] active:scale-95 text-white font-bold text-xs md:text-sm border border-[#5C3A21] shadow flex items-center gap-1 transition-all cursor-pointer">
-            <MenuIcon size={18} />
-            <span className="hidden xs:inline">Menu</span>
+            className="px-2.5 h-9 min-w-[36px] min-h-[36px] rounded-xl bg-[#8C5832] hover:bg-[#724524] active:scale-95 text-white font-bold text-xs border border-[#5C3A21] shadow flex items-center gap-1 transition-all cursor-pointer">
+            <MenuIcon size={16} />
           </button>
         </div>
       </header>
@@ -1291,7 +1889,16 @@ export default function App() {
             <div className="absolute top-2 z-10 pointer-events-none flex flex-col items-center animate-bounce px-4">
               <div className="bg-[#8C5832]/95 text-white text-xs md:text-sm font-black px-4 py-2 rounded-full shadow-lg border-2 border-[#E8CAAA] flex items-center gap-2">
                 <span>👆 Drag to Aim &bull; Release or Tap to Drop!</span>
-                <span className="hidden sm:inline text-yellow-300 font-bold">(or Spacebar / &darr;)</span>
+                <span className="hidden sm:inline text-yellow-300 font-bold">(Space / &darr;)</span>
+              </div>
+            </div>
+          )}
+
+          {/* Anti-Gravity Onscreen tap hint */}
+          {antiGravityActive && (
+            <div className="absolute top-3 z-10 pointer-events-none flex flex-col items-center animate-pulse px-3">
+              <div className="bg-purple-900/90 text-purple-100 text-xs font-bold px-3 py-1.5 rounded-full shadow border border-purple-400 flex items-center gap-1.5">
+                <span>🌀 ZERO-G! Tap any floating fruit to push it toward its matching twin!</span>
               </div>
             </div>
           )}
@@ -1312,26 +1919,64 @@ export default function App() {
         </div>
       )}
 
-      {/* BOTTOM MOBILE CONTROLS / INSTRUCTIONS */}
-      <footer className="w-full bg-[#EAD8C0] border-t border-[#C89666] px-3 py-1.5 text-center shrink-0 z-10 max-w-2xl mx-auto flex items-center justify-between text-[11px] md:text-xs text-[#7A502E] pointer-events-auto">
-        <span className="font-medium">
-          {isMobile
-            ? '👆 Drag & Release to Drop'
-            : '🖱️ Move & Click to Drop • Space / ↓'}
-        </span>
-        <span className="font-bold text-[#8C5832]">
-          Merge 2 🍉 to Win!
-        </span>
+      {/* BOTTOM EVOLUTION LEGEND & CONTROLS */}
+      <footer className="w-full bg-[#EAD8C0] border-t border-[#C89666] px-2 py-1 shrink-0 z-10 max-w-2xl mx-auto flex flex-col gap-1 pointer-events-auto">
+        {/* Interactive Evolution Chain Strip (Scrollable & Responsive) */}
+        <div
+          onClick={() => setIsEvolutionTreeOpen(true)}
+          title="Click to view full Evolution Guide"
+          className="flex items-center justify-between overflow-x-auto py-0.5 px-1 bg-[#FAF3E7] rounded-xl border border-[#D4A373] shadow-inner cursor-pointer hover:bg-[#F5ECE0] transition-colors">
+          <div className="flex items-center gap-1 shrink-0">
+            {FRUIT_TIERS.map((tier, idx) => (
+              <React.Fragment key={tier.name}>
+                <div
+                  className="w-5 h-5 rounded-full flex items-center justify-center border shadow-xs"
+                  style={{
+                    backgroundColor: tier.color,
+                    borderColor: '#FFFFFF',
+                  }}
+                  title={`${tier.tier}. ${tier.name} (+${tier.points} pts)`}>
+                  {tier.tier === 6 ? (
+                    <span className="text-[8px] font-black text-white">🥒</span>
+                  ) : tier.tier === 13 ? (
+                    <span className="text-[8px] font-black text-white">👑</span>
+                  ) : (
+                    <span className="text-[7px] font-black text-white drop-shadow-xs">
+                      {tier.tier}
+                    </span>
+                  )}
+                </div>
+                {idx < FRUIT_TIERS.length - 1 && (
+                  <span className="text-[9px] text-[#A67C52] font-bold">›</span>
+                )}
+              </React.Fragment>
+            ))}
+          </div>
+          <span className="text-[10px] font-extrabold text-[#8C5832] shrink-0 ml-2">
+            13 Tiers
+          </span>
+        </div>
+
+        {/* Footer controls hint */}
+        <div className="flex items-center justify-between text-[10px] md:text-xs text-[#7A502E] px-1">
+          <span className="font-medium">
+            {isMobile
+              ? '👆 Drag & Release to Drop'
+              : '🖱️ Move & Click • Space / ↓ • Z: Zero-G • M: Magnet'}
+          </span>
+          <span className="font-bold text-[#8C5832]">
+            Evolve to 👑 King Durian!
+          </span>
+        </div>
       </footer>
 
-      {/* EVOLUTION TREE MODAL */}
+      {/* EVOLUTION TREE MODAL (ALL 13 TIERS) */}
       {isEvolutionTreeOpen && (
         <MenuOverlay tone="neutral" zIndex={60}>
           <div className="w-full max-w-md bg-[#FFF9F0] border-4 border-[#8C5832] rounded-3xl p-5 m-3 shadow-2xl flex flex-col items-center pointer-events-auto">
-            <div className="w-full flex items-center justify-between mb-3 border-b-2 border-[#E8CAAA] pb-2">
+            <div className="w-full flex items-center justify-between mb-2 border-b-2 border-[#E8CAAA] pb-2">
               <h2 className="text-xl font-extrabold text-[#5C3A21] flex items-center gap-2">
-                <Sparkles size={20} className="text-[#F59E0B]" /> Fruit
-                Evolution Tree
+                <Sparkles size={20} className="text-[#F59E0B]" /> 13-Tier Evolution Guide
               </h2>
               <button
                 onClick={() => setIsEvolutionTreeOpen(false)}
@@ -1340,22 +1985,32 @@ export default function App() {
               </button>
             </div>
 
-            <p className="text-xs text-[#7A502E] mb-4 text-center">
-              Merge identical fruit pairs to evolve into larger fruits!
+            <p className="text-xs text-[#7A502E] mb-3 text-center">
+              Merge matching fruits to evolve them into larger tiers and score massive points!
             </p>
 
-            <div className="w-full grid grid-cols-2 gap-2 overflow-y-auto max-h-[55vh] p-1 touch-auto">
+            <div className="w-full grid grid-cols-2 gap-2 overflow-y-auto max-h-[52vh] p-1 touch-auto">
               {FRUIT_TIERS.map((tier) => (
                 <div
                   key={tier.name}
-                  className="flex items-center gap-2 p-2 rounded-2xl bg-[#FAF3E7] border border-[#D4A373] shadow-sm">
+                  className={`flex items-center gap-2 p-2 rounded-2xl border shadow-sm ${
+                    tier.tier === 13
+                      ? 'bg-amber-100 border-amber-400 ring-2 ring-amber-300'
+                      : tier.tier === 6
+                      ? 'bg-emerald-50 border-emerald-400'
+                      : 'bg-[#FAF3E7] border-[#D4A373]'
+                  }`}>
                   <div
                     className="w-9 h-9 rounded-full flex items-center justify-center p-0.5 border shadow-inner shrink-0"
                     style={{
                       borderColor: tier.color,
-                      backgroundColor: '#FFFFFF',
+                      backgroundColor: tier.tier === 13 ? '#FEF3C7' : '#FFFFFF',
                     }}>
-                    {assetsReady && assets[tier.assetKey] ? (
+                    {tier.tier === 6 ? (
+                      <span className="text-xl">🥒</span>
+                    ) : tier.tier === 13 ? (
+                      <span className="text-xl">👑</span>
+                    ) : assetsReady && assets[tier.assetKey] ? (
                       <img
                         src={ASSETS_MANIFEST[tier.assetKey]}
                         alt={tier.name}
@@ -1382,7 +2037,7 @@ export default function App() {
 
             <button
               onClick={() => setIsEvolutionTreeOpen(false)}
-              className="mt-4 w-full bg-[#8C5832] hover:bg-[#724524] active:scale-98 text-white py-2.5 rounded-full font-bold text-sm shadow transition-all cursor-pointer">
+              className="mt-3 w-full bg-[#8C5832] hover:bg-[#724524] active:scale-98 text-white py-2.5 rounded-full font-bold text-sm shadow transition-all cursor-pointer">
               Got It!
             </button>
           </div>
@@ -1395,8 +2050,7 @@ export default function App() {
           <div className="w-full max-w-md bg-[#FFF9F0] border-4 border-[#8C5832] rounded-3xl p-6 m-3 shadow-2xl flex flex-col items-center pointer-events-auto">
             <div className="w-full flex items-center justify-between mb-4 border-b-2 border-[#E8CAAA] pb-2">
               <h2 className="text-2xl font-extrabold text-[#5C3A21] flex items-center gap-2">
-                <HelpCircle size={24} className="text-[#F59E0B]" /> How To
-                Play
+                <HelpCircle size={24} className="text-[#F59E0B]" /> How To Play
               </h2>
               <button
                 onClick={() => setIsHowToPlayOpen(false)}
@@ -1411,31 +2065,28 @@ export default function App() {
                   1. Aim and Drop 🍒
                 </strong>
                 Move your mouse or drag your finger horizontally to position the
-                held fruit. Release or tap anywhere to drop it into the jar (or press Space / &darr;).
+                held fruit. Release or tap anywhere to drop it into the jar (or press Space / &darr;). Dropper spawns are restricted to Tiers 1-5.
               </div>
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  2. Merge Identical Fruits 🍇+🍇
+                  2. 13-Tier Evolution Chain 🥒 &bull; 🍉 &bull; 👑
                 </strong>
-                When two matching fruits touch, they combine into the next
-                evolution tier and award score points.
+                Merge matching fruits to evolve from Cherry all the way to Tier 6 Cucumber, Watermelon, and Tier 13 King Durian!
               </div>
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  3. Watch The Danger Line ⚠️
+                  3. 🌀 Zero-G Anti-Gravity Power-Up
                 </strong>
-                If settled fruits remain stacked above the red dashed line for
-                more than 2.5 seconds, the jar overflows and the game ends!
+                Inverts gravity for 5 seconds! A ceiling barrier prevents fruit escape, and danger-line game over is paused. Tap floating fruits during Zero-G to launch them toward their matching twin!
               </div>
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  4. Ultimate Watermelon Fusion 🍉
+                  4. 🧲 Magnet Power-Up
                 </strong>
-                Combine two giant watermelons for the ultimate celebratory 4096
-                point explosion!
+                Instantly tracks down the highest tier matching fruit pair in the jar and magnetically pulls them together with an electric tractor beam!
               </div>
             </div>
 
@@ -1448,7 +2099,7 @@ export default function App() {
         </MenuOverlay>
       )}
 
-      {/* GAME MENU OVERLAY (PAUSE / AUDIO CONTROLS) */}
+      {/* GAME MENU OVERLAY */}
       {isMenuOpen && gameState.status === 'PLAYING' && (
         <MenuOverlay tone="neutral" zIndex={50}>
           <div className="w-full max-w-md bg-[#FFF9F0] border-4 border-[#8C5832] rounded-3xl p-6 m-3 shadow-2xl flex flex-col items-center pointer-events-auto">
@@ -1494,8 +2145,7 @@ export default function App() {
               <button
                 onClick={() => setIsEvolutionTreeOpen(true)}
                 className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
-                <Sparkles size={18} className="text-[#F59E0B]" /> Fruit
-                Evolution Guide
+                <Sparkles size={18} className="text-[#F59E0B]" /> Fruit Evolution Guide
               </button>
 
               {/* Restart current session */}
@@ -1524,23 +2174,14 @@ export default function App() {
         <MenuOverlay tone="neutral">
           <div className="bg-[#FFF9F0] p-6 md:p-8 rounded-3xl shadow-2xl flex flex-col items-center w-full max-w-sm border-4 border-[#8C5832] pointer-events-auto">
             <div className="w-16 h-16 rounded-full bg-[#FFE4BA] border-2 border-[#C89666] flex items-center justify-center shadow-inner mb-3">
-              {assetsReady && assets['fruit_watermelon'] ? (
-                <img
-                  src={ASSETS_MANIFEST['fruit_watermelon']}
-                  alt="Juicy Drop"
-                  className="w-12 h-12 object-contain animate-bounce pointer-events-none"
-                />
-              ) : (
-                <span className="text-3xl">🍉</span>
-              )}
+              <span className="text-3xl animate-bounce">👑</span>
             </div>
 
             <h1 className="text-3xl md:text-4xl font-black mb-2 text-[#5C3A21] text-center tracking-wide">
               Juicy Drop
             </h1>
             <p className="text-xs md:text-sm text-[#8C5832] font-semibold text-center mb-6">
-              Drop & merge fruits inside the cozy wooden jar to grow giant
-              watermelons!
+              Drop & merge fruits inside the cozy wooden jar to create Cucumber, Watermelon, and the legendary King Durian!
             </p>
 
             <div className="w-full space-y-3">
@@ -1563,7 +2204,7 @@ export default function App() {
                 onClick={() => setIsEvolutionTreeOpen(true)}
                 className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] text-[#5C3A21] py-3 rounded-2xl font-bold text-sm border-2 border-[#D4A373] transition-all flex items-center justify-center gap-2 cursor-pointer">
                 <Sparkles size={18} className="text-[#F59E0B]" />
-                Fruit Evolution Guide
+                13-Tier Evolution Guide
               </button>
             </div>
           </div>
@@ -1588,8 +2229,8 @@ export default function App() {
       {/* VICTORY SCREEN */}
       {gameState.status === 'VICTORY' && (
         <Overlay
-          title="WATERMELON MERGED! 🍉🎉"
-          description={`Ultimate Masterpiece! Final Score: ${gameState.score}`}
+          title="👑 KING DURIAN CROWNED! 🎉"
+          description={`Supreme Fruit Master! Final Score: ${gameState.score}`}
           actionLabel="PLAY AGAIN"
           onAction={initGame}
           icon={<RotateCw size={24} />}

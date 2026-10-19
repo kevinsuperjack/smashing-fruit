@@ -30,10 +30,13 @@ export interface FruitTier {
   aspectRatio: number;
   width: number;
   height: number;
+  friction?: number;
+  density?: number;
+  proceduralOnly?: boolean;
 }
 
 /**
- * Fruit definitions for all 11 tiers
+ * Fruit definitions for all 13 tiers including Cucumber and King Durian
  */
 export const FRUIT_TIERS: FruitTier[] = [
   {
@@ -93,6 +96,19 @@ export const FRUIT_TIERS: FruitTier[] = [
   },
   {
     tier: 6,
+    name: 'Cucumber',
+    assetKey: 'fruit_cucumber',
+    radius: 52,
+    points: 48,
+    color: '#38B000',
+    friction: 0.005,
+    aspectRatio: 1,
+    width: 500,
+    height: 500,
+    proceduralOnly: true,
+  },
+  {
+    tier: 7,
     name: 'Apple',
     assetKey: 'fruit_apple',
     radius: 72,
@@ -103,7 +119,7 @@ export const FRUIT_TIERS: FruitTier[] = [
     height: 571,
   },
   {
-    tier: 7,
+    tier: 8,
     name: 'Pear',
     assetKey: 'fruit_pear',
     radius: 86,
@@ -114,7 +130,7 @@ export const FRUIT_TIERS: FruitTier[] = [
     height: 753,
   },
   {
-    tier: 8,
+    tier: 9,
     name: 'Peach',
     assetKey: 'fruit_peach',
     radius: 100,
@@ -125,7 +141,7 @@ export const FRUIT_TIERS: FruitTier[] = [
     height: 577,
   },
   {
-    tier: 9,
+    tier: 10,
     name: 'Pineapple',
     assetKey: 'fruit_pineapple',
     radius: 116,
@@ -136,7 +152,7 @@ export const FRUIT_TIERS: FruitTier[] = [
     height: 805,
   },
   {
-    tier: 10,
+    tier: 11,
     name: 'Melon',
     assetKey: 'fruit_melon',
     radius: 134,
@@ -147,7 +163,7 @@ export const FRUIT_TIERS: FruitTier[] = [
     height: 786,
   },
   {
-    tier: 11,
+    tier: 12,
     name: 'Watermelon',
     assetKey: 'fruit_watermelon',
     radius: 154,
@@ -156,6 +172,19 @@ export const FRUIT_TIERS: FruitTier[] = [
     aspectRatio: 619 / 620,
     width: 619,
     height: 620,
+  },
+  {
+    tier: 13,
+    name: 'King Durian',
+    assetKey: 'fruit_durian',
+    radius: 130,
+    points: 5000,
+    color: '#9EF01A',
+    density: 0.005,
+    aspectRatio: 1,
+    width: 500,
+    height: 500,
+    proceduralOnly: true,
   },
 ];
 
@@ -265,7 +294,7 @@ export const CONFIG = {
 
   // Rules & Difficulty
   dropCooldownMs: {
-    value: 500,
+    value: 450,
     type: 'number',
     label: 'Drop Cooldown (ms)',
     group: 'Rules',
