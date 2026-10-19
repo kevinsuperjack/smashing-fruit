@@ -1,10 +1,10 @@
 # 🍉 Juicy Drop (Smashing Fruit)
 
-[![Live Demo](https://img.shields.io/badge/Play%20Now-Live%20on%20Netlify-00C7B7?style=for-the-badge&logo=netlify&logoColor=white)](https://juicy-drop-fruit-game.netlify.app)
+[![Live Demo](https://img.shields.io/badge/Play%20Now-Live%20on%20Netlify-00C7B7?style=for-the-badge&logo=netlify&logoColor=white)](https://smashing-fruits.netlify.app)
 
 **Juicy Drop** (*Smashing Fruit*) is a cozy, 2D physics-based **Suika / Fruit Merge** puzzle game built with **React**, **Matter.js**, **HTML5 Canvas**, and the **Web Audio API**. Drop adorable fruits into the glass jar, bounce and roll them together, unleash anti-gravity and magnetic power-ups, and merge matching pairs up the **13-tier evolution chain** all the way to the legendary **King Durian**!
 
-👉 **Play Live**: [https://juicy-drop-fruit-game.netlify.app](https://juicy-drop-fruit-game.netlify.app)
+👉 **Play Live**: [https://smashing-fruits.netlify.app](https://smashing-fruits.netlify.app)
 
 ---
 
