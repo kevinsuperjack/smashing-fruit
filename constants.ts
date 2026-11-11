@@ -1,5 +1,3 @@
-import {SpriteConfig} from './utils/helper';
-
 /**
  * Theming configuration for Juicy Drop.
  */
@@ -254,13 +252,13 @@ export const CONFIG = {
 
   // Audio Levels
   defaultMusicVolume: {
-    value: 0.5,
+    value: 0.18,
     type: 'number',
     label: 'Default Music Volume',
     group: 'AUDIO',
   },
   defaultSfxVolume: {
-    value: 0.7,
+    value: 0.65,
     type: 'number',
     label: 'Default SFX Volume',
     group: 'AUDIO',
@@ -311,10 +309,16 @@ export const CONFIG = {
     label: 'Max Dropper Fruit Tier',
     group: 'Rules',
   },
-  twoWatermelonsVictory: {
+  comboWindowSeconds: {
+    value: 2.2,
+    type: 'number',
+    label: 'Combo Window (s)',
+    group: 'Rules',
+  },
+  kingDurianVictory: {
     value: true,
     type: 'boolean',
-    label: 'Two Watermelons Win Condition',
+    label: 'King Durian Pinnacle Victory Prompt',
     group: 'Rules',
   },
 

@@ -23,6 +23,7 @@ import {
   THEME,
 } from './constants';
 import BackgroundMusic from './utils/BackgroundMusic';
+import {FruitBadgeIcon} from './components/FruitBadgeIcon';
 import {
   createFixedStepper,
   drawBackground,
@@ -44,6 +45,8 @@ import {
 
 const BACKGROUND_MUSIC_URL = 'assets/audio/bgm_cozy_orchard.mp3';
 const HIGH_SCORE_STORAGE_KEY = 'juicydrop_highscore_v2';
+const SFX_MUTE_STORAGE_KEY = 'juicydrop_sfx_muted_v1';
+const MUSIC_MUTE_STORAGE_KEY = 'juicydrop_music_muted_v1';
 
 const ASSETS_MANIFEST: Record<string, string> = {
   cozy_wooden_backdrop: 'assets/images/cozy_wooden_backdrop.png',
@@ -86,6 +89,20 @@ interface ScorePopup {
   life: number;
   maxLife: number;
   scale: number;
+  fontSize?: number;
+}
+
+// Expanding juicy shockwave ring on merges & combos
+interface ShockwaveRing {
+  x: number;
+  y: number;
+  radius: number;
+  maxRadius: number;
+  color: string;
+  alpha: number;
+  life: number;
+  maxLife: number;
+  lineWidth: number;
 }
 
 // Active Fruit Entity tracking on physics body
@@ -96,6 +113,11 @@ interface FruitEntity {
   spawnTime: number;
   renderScale: number;
   targetScale: number;
+  squashX: number;
+  squashY: number;
+  squashVelX: number;
+  squashVelY: number;
+  lastImpactTime: number;
   blinkTimer: number;
   isBlinking: boolean;
   expression: 'happy' | 'bouncy' | 'shocked' | 'sleepy' | 'regal';
@@ -107,13 +129,13 @@ interface FruitEntity {
 interface ActiveMagnet {
   fruitAId: number;
   fruitBId: number;
-  remainingFrames: number;
-  totalFrames: number;
+  remainingSeconds: number;
+  totalSeconds: number;
 }
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
-  const stepperRef = useRef<ReturnType<typeof createFixedStepper>>();
+  const stepperRef = useRef<ReturnType<typeof createFixedStepper> | null>(null);
   const lastCancelRef = useRef(false);
   const isMobile = useIsMobile();
 
@@ -151,13 +173,32 @@ export default function App() {
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [isHowToPlayOpen, setIsHowToPlayOpen] = useState(false);
   const [isEvolutionTreeOpen, setIsEvolutionTreeOpen] = useState(false);
-  const [sfxMuted, setSfxMuted] = useState(false);
-  const [musicMuted, setMusicMuted] = useState(false);
+  const [sfxMuted, setSfxMuted] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return localStorage.getItem(SFX_MUTE_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
+  const [musicMuted, setMusicMuted] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      return localStorage.getItem(MUSIC_MUTE_STORAGE_KEY) === '1';
+    } catch {
+      return false;
+    }
+  });
   const [totalDrops, setTotalDrops] = useState(0);
+  const [isEndlessMode, setIsEndlessMode] = useState(false);
+  const [maxCombo, setMaxCombo] = useState(0);
+  const [totalMerges, setTotalMerges] = useState(0);
+  const [highestTier, setHighestTier] = useState(1);
 
   // Power-up States & Cooldowns
   const [antiGravityCooldown, setAntiGravityCooldown] = useState<number>(0);
   const [antiGravityActive, setAntiGravityActive] = useState<boolean>(false);
+  const [antiGravityActiveSec, setAntiGravityActiveSec] = useState<number>(0);
   const [magnetCooldown, setMagnetCooldown] = useState<number>(0);
   const [magnetActive, setMagnetActive] = useState<boolean>(false);
 
@@ -167,6 +208,14 @@ export default function App() {
 
   const gameStateRef = useRef(gameState);
   gameStateRef.current = gameState;
+  const isMenuOpenRef = useRef(isMenuOpen);
+  isMenuOpenRef.current = isMenuOpen;
+  const isHowToPlayOpenRef = useRef(isHowToPlayOpen);
+  isHowToPlayOpenRef.current = isHowToPlayOpen;
+  const isEvolutionTreeOpenRef = useRef(isEvolutionTreeOpen);
+  isEvolutionTreeOpenRef.current = isEvolutionTreeOpen;
+  const isEndlessModeRef = useRef(isEndlessMode);
+  isEndlessModeRef.current = isEndlessMode;
 
   // Sync high score to localStorage
   const updateScoreWithHighScore = useCallback((pointsToAdd: number) => {
@@ -183,33 +232,55 @@ export default function App() {
     });
   }, []);
 
-  // Key Google Font loading
+  // Sync SFX volume, persisted mute state & platform mute events
   useEffect(() => {
-    const link = document.createElement('link');
-    link.href =
-      'https://fonts.googleapis.com/css2?family=Fredoka:wght@400;600;700;800&family=Quicksand:wght@600;700&display=swap';
-    link.rel = 'stylesheet';
-    document.head.appendChild(link);
-    return () => {
-      document.head.removeChild(link);
+    const defaultSfxVol = (getConfig('defaultSfxVolume') as number) ?? 0.65;
+    gameAudio.setVolume(defaultSfxVol);
+    gameAudio.setMuted(sfxMuted);
+    try {
+      localStorage.setItem(SFX_MUTE_STORAGE_KEY, sfxMuted ? '1' : '0');
+    } catch {}
+  }, [sfxMuted]);
+
+  useEffect(() => {
+    try {
+      localStorage.setItem(MUSIC_MUTE_STORAGE_KEY, musicMuted ? '1' : '0');
+    } catch {}
+  }, [musicMuted]);
+
+  useEffect(() => {
+    const onPlatformMute = (e: Event) => {
+      const customEvent = e as CustomEvent<{muted: boolean}>;
+      if (typeof customEvent.detail?.muted === 'boolean') {
+        setSfxMuted(customEvent.detail.muted);
+      }
     };
+    window.addEventListener('playground-mute', onPlatformMute);
+    return () => window.removeEventListener('playground-mute', onPlatformMute);
   }, []);
 
   // Back key handling
   useEffect(() => {
-    (window as any).canHandleBackKey = gameState.status !== 'START';
-  }, [gameState.status]);
+    (window as any).canHandleBackKey =
+      gameState.status !== 'START' || isHowToPlayOpen || isEvolutionTreeOpen;
+  }, [gameState.status, isHowToPlayOpen, isEvolutionTreeOpen]);
 
-  const inputRef = useInput(canvasRef, true, {
-    width: canvasWidth,
-    height: canvasHeight,
-  });
+  const inputRef = useInput(
+    canvasRef,
+    true,
+    {
+      width: canvasWidth,
+      height: canvasHeight,
+    },
+    assetsReady,
+  );
 
   // Matter Physics Simulation Engine & Refs
   const engineRef = useRef<Matter.Engine | null>(null);
   const fruitsRef = useRef<Map<number, FruitEntity>>(new Map());
   const particlesRef = useRef<Particle[]>([]);
   const scorePopupsRef = useRef<ScorePopup[]>([]);
+  const shockwavesRef = useRef<ShockwaveRing[]>([]);
 
   // Jar bounds (Inside dimensions)
   const jarX = 70;
@@ -220,11 +291,13 @@ export default function App() {
   const dangerLineY = 320;
   const dropperY = 175;
 
-  // Dropper state
+  // Dropper & Input state
   const dropperXRef = useRef<number>(canvasWidth / 2);
   const targetDropperXRef = useRef<number>(canvasWidth / 2);
   const lastDropTimeRef = useRef<number>(0);
+  const sessionPlayStartRef = useRef<number>(0);
   const isPointerDownRef = useRef<boolean>(false);
+  const zeroGTapHandledRef = useRef<boolean>(false);
   const dangerTimerRef = useRef<number>(0);
   const currentTierRef = useRef<number>(1);
   const nextTierRef = useRef<number>(1);
@@ -233,15 +306,26 @@ export default function App() {
     Array<{fruitA: FruitEntity; fruitB: FruitEntity; midX: number; midY: number}>
   >([]);
 
+  // Combo & Screen Shake Refs
+  const comboCountRef = useRef<number>(0);
+  const comboTimerRef = useRef<number>(0);
+  const maxComboRef = useRef<number>(0);
+  const totalMergesRef = useRef<number>(0);
+  const highestTierRef = useRef<number>(1);
+  const screenShakeRef = useRef<number>(0);
+
   // Anti-Gravity & Magnet Physics Control Refs
   const antiGravityTimerRef = useRef<number>(0);
   const antiGravityCeilingRef = useRef<Matter.Body | null>(null);
   const dangerGraceCooldownRef = useRef<number>(0);
   const activeMagnetRef = useRef<ActiveMagnet | null>(null);
 
-  // Cooldown timers in seconds
+  // Cooldown timers in seconds + last displayed integer guards (avoids 60Hz setState)
   const antiGravityCdTimerRef = useRef<number>(0);
   const magnetCdTimerRef = useRef<number>(0);
+  const lastDisplayedAgCdRef = useRef<number>(0);
+  const lastDisplayedAgActiveSecRef = useRef<number>(0);
+  const lastDisplayedMagCdRef = useRef<number>(0);
 
   // Weighted random dropper tier (Restricted to Tiers 1-5)
   const getRandomSpawnTier = useCallback(() => {
@@ -302,7 +386,14 @@ export default function App() {
 
   // Spawn Score Popup
   const spawnScorePopup = useCallback(
-    (x: number, y: number, text: string, color: string) => {
+    (
+      x: number,
+      y: number,
+      text: string,
+      color: string,
+      fontSize?: number,
+      scale = 0.5,
+    ) => {
       scorePopupsRef.current.push({
         x,
         y: Math.max(100, y - 10),
@@ -310,8 +401,27 @@ export default function App() {
         color,
         alpha: 1,
         life: 0,
-        maxLife: 0.9,
-        scale: 0.5,
+        maxLife: 0.95,
+        scale,
+        fontSize,
+      });
+    },
+    [],
+  );
+
+  // Spawn Expanding Shockwave Ring
+  const spawnShockwave = useCallback(
+    (x: number, y: number, maxRadius: number, color: string, lineWidth = 5) => {
+      shockwavesRef.current.push({
+        x,
+        y,
+        radius: Math.max(10, maxRadius * 0.2),
+        maxRadius,
+        color,
+        alpha: 0.9,
+        life: 0,
+        maxLife: 0.42,
+        lineWidth,
       });
     },
     [],
@@ -320,13 +430,23 @@ export default function App() {
   // Powerup 1: Activate Anti-Gravity
   const activateAntiGravity = useCallback(() => {
     if (gameStateRef.current.status !== 'PLAYING') return;
+    if (
+      isMenuOpenRef.current ||
+      isHowToPlayOpenRef.current ||
+      isEvolutionTreeOpenRef.current
+    ) {
+      return;
+    }
     if (antiGravityTimerRef.current > 0 || antiGravityCdTimerRef.current > 0) return;
     if (!engineRef.current) return;
 
     gameAudio.playPowerupChime();
     antiGravityTimerRef.current = 5.0; // 5 seconds duration
     antiGravityCdTimerRef.current = 15.0; // 15s cooldown
+    lastDisplayedAgActiveSecRef.current = 5;
+    lastDisplayedAgCdRef.current = 15;
     setAntiGravityActive(true);
+    setAntiGravityActiveSec(5);
     setAntiGravityCooldown(15);
 
     // Create temporary static horizontal ceiling rigid body at y = 95
@@ -334,7 +454,7 @@ export default function App() {
     const ceiling = Matter.Bodies.rectangle(
       canvasWidth / 2,
       ceilingY,
-      jarWidth + 80,
+      jarWidth + 120,
       30,
       {isStatic: true, label: 'zero_g_ceiling', friction: 0.05, restitution: 0.5},
     );
@@ -349,6 +469,13 @@ export default function App() {
   // Powerup 2: Activate Magnet
   const activateMagnet = useCallback(() => {
     if (gameStateRef.current.status !== 'PLAYING') return;
+    if (
+      isMenuOpenRef.current ||
+      isHowToPlayOpenRef.current ||
+      isEvolutionTreeOpenRef.current
+    ) {
+      return;
+    }
     if (activeMagnetRef.current || magnetCdTimerRef.current > 0) return;
     if (!engineRef.current) return;
 
@@ -379,18 +506,36 @@ export default function App() {
       return;
     }
 
+    // Iterate all (i, j) pairs to select the closest matching pair
     const pairList = tierMap.get(bestTier)!;
-    const fruitA = pairList[0];
-    const fruitB = pairList[1];
+    let fruitA = pairList[0];
+    let fruitB = pairList[1];
+    let bestDist = Infinity;
+    for (let i = 0; i < pairList.length; i++) {
+      for (let j = i + 1; j < pairList.length; j++) {
+        const candidateA = pairList[i];
+        const candidateB = pairList[j];
+        const d = Math.hypot(
+          candidateB.body.position.x - candidateA.body.position.x,
+          candidateB.body.position.y - candidateA.body.position.y,
+        );
+        if (d < bestDist) {
+          bestDist = d;
+          fruitA = candidateA;
+          fruitB = candidateB;
+        }
+      }
+    }
 
     activeMagnetRef.current = {
       fruitAId: fruitA.body.id,
       fruitBId: fruitB.body.id,
-      remainingFrames: 90,
-      totalFrames: 90,
+      remainingSeconds: 2.2,
+      totalSeconds: 2.2,
     };
 
     magnetCdTimerRef.current = 12.0; // 12s cooldown
+    lastDisplayedMagCdRef.current = 12;
     setMagnetCooldown(12);
     setMagnetActive(true);
 
@@ -407,7 +552,13 @@ export default function App() {
   // Drop current fruit into jar
   const dropFruit = useCallback(() => {
     if (gameStateRef.current.status !== 'PLAYING') return;
-    if (isMenuOpen || isHowToPlayOpen || isEvolutionTreeOpen) return;
+    if (
+      isMenuOpenRef.current ||
+      isHowToPlayOpenRef.current ||
+      isEvolutionTreeOpenRef.current
+    ) {
+      return;
+    }
 
     const now = performance.now();
     const cooldown = (getConfig('dropCooldownMs') as number) || 450;
@@ -416,7 +567,8 @@ export default function App() {
 
     gameAudio.resume();
 
-    const tierIndex = currentTierRef.current - 1;
+    const droppedTier = currentTierRef.current;
+    const tierIndex = droppedTier - 1;
     const tierConfig = FRUIT_TIERS[tierIndex] || FRUIT_TIERS[0];
     const radius = tierConfig.radius;
 
@@ -428,13 +580,16 @@ export default function App() {
     const dropY = dropperY;
 
     const restitution = (getConfig('fruitRestitution') as number) || 0.22;
-    const friction = tierConfig.friction ?? ((getConfig('fruitFriction') as number) || 0.08);
-    const densityScale = tierConfig.density ?? ((getConfig('fruitDensityMultiplier') as number) || 0.002);
+    const friction =
+      tierConfig.friction ?? ((getConfig('fruitFriction') as number) || 0.08);
+    const densityScale =
+      tierConfig.density ??
+      ((getConfig('fruitDensityMultiplier') as number) || 0.002);
 
     const body = Matter.Bodies.circle(dropX, dropY, radius, {
       restitution,
       friction,
-      density: densityScale * (1 + currentTierRef.current * 0.15),
+      density: densityScale * (1 + droppedTier * 0.15),
       label: 'fruit',
       angularVelocity: (Math.random() - 0.5) * 0.05,
     });
@@ -443,11 +598,16 @@ export default function App() {
 
     const entity: FruitEntity = {
       id: `fruit_${body.id}`,
-      tier: currentTierRef.current,
+      tier: droppedTier,
       body,
       spawnTime: now,
       renderScale: 0.85,
       targetScale: 1.0,
+      squashX: 1,
+      squashY: 1,
+      squashVelX: 0,
+      squashVelY: 0,
+      lastImpactTime: now,
       blinkTimer: 1 + Math.random() * 3,
       isBlinking: false,
       expression: 'happy',
@@ -457,6 +617,11 @@ export default function App() {
 
     fruitsRef.current.set(body.id, entity);
     gameAudio.playCrispClick();
+
+    if (droppedTier > highestTierRef.current) {
+      highestTierRef.current = droppedTier;
+      setHighestTier(droppedTier);
+    }
 
     // Increment drop count
     totalDropsRef.current += 1;
@@ -471,31 +636,55 @@ export default function App() {
     setNextTier(newUpcoming);
 
     lastDropTimeRef.current = now;
-  }, [dropperY, jarRight, jarX, getRandomSpawnTier, isMenuOpen, isHowToPlayOpen, isEvolutionTreeOpen]);
+  }, [dropperY, jarRight, jarX, getRandomSpawnTier]);
 
-  // Direct keyboard listener for instant dropping, steering, and powerup shortcuts
+  // Direct keyboard listener for instant dropping and powerup shortcuts
   useEffect(() => {
     const handleDirectKeyDown = (e: KeyboardEvent) => {
       if (gameStateRef.current.status !== 'PLAYING') return;
-      if (isMenuOpen || isHowToPlayOpen || isEvolutionTreeOpen) return;
+      if (
+        isMenuOpenRef.current ||
+        isHowToPlayOpenRef.current ||
+        isEvolutionTreeOpenRef.current
+      ) {
+        return;
+      }
 
-      if (e.key === ' ' || e.key === 'Spacebar' || e.key === 'ArrowDown' || e.key === 's' || e.key === 'S' || e.key === 'Enter') {
+      if (
+        e.key === ' ' ||
+        e.key === 'Spacebar' ||
+        e.key === 'ArrowDown' ||
+        e.key === 's' ||
+        e.key === 'S' ||
+        e.key === 'Enter'
+      ) {
         e.preventDefault();
+        if (e.repeat) return;
+        if (performance.now() - sessionPlayStartRef.current <= 180) return;
         dropFruit();
-      } else if (e.key === 'ArrowLeft' || e.key === 'a' || e.key === 'A') {
-        targetDropperXRef.current = Math.max(jarX + 30, targetDropperXRef.current - 45);
-      } else if (e.key === 'ArrowRight' || e.key === 'd' || e.key === 'D') {
-        targetDropperXRef.current = Math.min(jarRight - 30, targetDropperXRef.current + 45);
       } else if (e.key === 'z' || e.key === 'Z' || e.key === '1') {
+        if (e.repeat) return;
         activateAntiGravity();
       } else if (e.key === 'm' || e.key === 'M' || e.key === '2') {
+        if (e.repeat) return;
         activateMagnet();
       }
     };
 
     window.addEventListener('keydown', handleDirectKeyDown, {passive: false});
     return () => window.removeEventListener('keydown', handleDirectKeyDown);
-  }, [dropFruit, activateAntiGravity, activateMagnet, isEvolutionTreeOpen, isHowToPlayOpen, isMenuOpen, jarRight, jarX]);
+  }, [dropFruit, activateAntiGravity, activateMagnet]);
+
+  // Continue seamlessly in Endless Mode after crowning / merging King Durians
+  const resumeEndlessMode = useCallback(() => {
+    isEndlessModeRef.current = true;
+    setIsEndlessMode(true);
+    dangerTimerRef.current = 0;
+    dangerGraceCooldownRef.current = 2.0;
+    sessionPlayStartRef.current = performance.now();
+    setGameState((prev) => ({...prev, status: 'PLAYING'}));
+    gameAudio.playPowerupChime();
+  }, []);
 
   // Initialize/Reset Game Session
   const initGame = useCallback(() => {
@@ -512,8 +701,12 @@ export default function App() {
 
     const world = engine.world;
     const wallThickness = 60;
+    const wallTopY = 60;
+    const wallBottomY = jarBottom + wallThickness;
+    const wallHeight = wallBottomY - wallTopY;
+    const wallCenterY = (wallTopY + wallBottomY) / 2;
 
-    // Jar Boundaries (Left, Right, Bottom)
+    // Jar Boundaries (Left, Right extended up to y=60 for Zero-G enclosure, Bottom)
     const ground = Matter.Bodies.rectangle(
       canvasWidth / 2,
       jarBottom + wallThickness / 2,
@@ -524,25 +717,27 @@ export default function App() {
 
     const leftWall = Matter.Bodies.rectangle(
       jarX - wallThickness / 2,
-      (jarTop + jarBottom) / 2 + 50,
+      wallCenterY,
       wallThickness,
-      jarBottom - jarTop + 100,
+      wallHeight,
       {isStatic: true, label: 'wall', friction: 0.1, restitution: 0.1},
     );
 
     const rightWall = Matter.Bodies.rectangle(
       jarRight + wallThickness / 2,
-      (jarTop + jarBottom) / 2 + 50,
+      wallCenterY,
       wallThickness,
-      jarBottom - jarTop + 100,
+      wallHeight,
       {isStatic: true, label: 'wall', friction: 0.1, restitution: 0.1},
     );
 
     Matter.Composite.add(world, [ground, leftWall, rightWall]);
 
-    // Collision listener for fruit merging
+    // Collision listener for fruit merging & tactile squash-and-stretch bounces
     Matter.Events.on(engine, 'collisionStart', (event) => {
       const pairs = event.pairs;
+      const nowCollision = performance.now();
+
       for (let i = 0; i < pairs.length; i++) {
         const pair = pairs[i];
         const bodyA = pair.bodyA;
@@ -572,30 +767,98 @@ export default function App() {
               midX,
               midY,
             });
+            continue;
+          }
+        }
+
+        // Non-merge collision: tactile squash-and-stretch + soft thud SFX
+        const dvx = bodyA.velocity.x - bodyB.velocity.x;
+        const dvy = bodyA.velocity.y - bodyB.velocity.y;
+        const impactSpeed = Math.hypot(dvx, dvy);
+
+        if (impactSpeed > 1.8) {
+          const nx = pair.collision?.normal
+            ? Math.abs(pair.collision.normal.x)
+            : Math.abs(dvx);
+          const ny = pair.collision?.normal
+            ? Math.abs(pair.collision.normal.y)
+            : Math.abs(dvy);
+          const isVerticalImpact = ny >= nx;
+          const impulse = Math.min(6.2, (impactSpeed - 1.8) * 0.9);
+          let soundPlayed = false;
+
+          const applyBounceSquash = (fruit: FruitEntity | undefined) => {
+            if (!fruit || fruit.merged) return;
+            if (nowCollision - fruit.lastImpactTime <= 85) return;
+            fruit.lastImpactTime = nowCollision;
+
+            if (isVerticalImpact) {
+              fruit.squashVelX += impulse;
+              fruit.squashVelY -= impulse;
+            } else {
+              fruit.squashVelX -= impulse;
+              fruit.squashVelY += impulse;
+            }
+
+            if (!soundPlayed && impactSpeed > 2.6) {
+              soundPlayed = true;
+              gameAudio.playSoftBounce(
+                Math.min(1, (impactSpeed - 1.8) / 8),
+                fruit.tier,
+              );
+            }
+          };
+
+          if (bodyA.label === 'fruit') {
+            applyBounceSquash(fruitsRef.current.get(bodyA.id));
+          }
+          if (bodyB.label === 'fruit') {
+            applyBounceSquash(fruitsRef.current.get(bodyB.id));
           }
         }
       }
     });
 
+    const startNow = performance.now();
     engineRef.current = engine;
     fruitsRef.current.clear();
     particlesRef.current = [];
     scorePopupsRef.current = [];
+    shockwavesRef.current = [];
     mergeQueueRef.current = [];
     dangerTimerRef.current = 0;
     dangerGraceCooldownRef.current = 0;
     antiGravityTimerRef.current = 0;
     antiGravityCdTimerRef.current = 0;
     magnetCdTimerRef.current = 0;
+    lastDisplayedAgCdRef.current = 0;
+    lastDisplayedAgActiveSecRef.current = 0;
+    lastDisplayedMagCdRef.current = 0;
     antiGravityCeilingRef.current = null;
     activeMagnetRef.current = null;
     totalDropsRef.current = 0;
+    comboCountRef.current = 0;
+    comboTimerRef.current = 0;
+    maxComboRef.current = 0;
+    totalMergesRef.current = 0;
+    highestTierRef.current = 1;
+    screenShakeRef.current = 0;
+    isEndlessModeRef.current = false;
+    zeroGTapHandledRef.current = false;
+    isPointerDownRef.current = false;
+    sessionPlayStartRef.current = startNow;
+    lastDropTimeRef.current = startNow - 600;
+
     setTotalDrops(0);
+    setIsEndlessMode(false);
+    setMaxCombo(0);
+    setTotalMerges(0);
+    setHighestTier(1);
     setAntiGravityActive(false);
+    setAntiGravityActiveSec(0);
     setAntiGravityCooldown(0);
     setMagnetActive(false);
     setMagnetCooldown(0);
-    lastDropTimeRef.current = performance.now() - 600;
 
     const t1 = getRandomSpawnTier();
     const t2 = getRandomSpawnTier();
@@ -622,7 +885,7 @@ export default function App() {
     if (sdk) {
       sdk.startGame();
     }
-  }, [canvasWidth, jarBottom, jarRight, jarTop, jarWidth, jarX, getRandomSpawnTier, sdk]);
+  }, [canvasWidth, jarBottom, jarRight, jarWidth, jarX, getRandomSpawnTier, sdk]);
 
   // Lifecycle & Score Reporting
   usePlaygroundGameLifecycle(gameState, sdk);
@@ -655,6 +918,7 @@ export default function App() {
     // Check if player clicked directly on any existing fruit inside the container
     let clickedFruit: FruitEntity | null = null;
     fruitsRef.current.forEach((fruit) => {
+      if (fruit.merged) return;
       const radius = FRUIT_TIERS[fruit.tier - 1]?.radius || 30;
       const dx = fruit.body.position.x - tapX;
       const dy = fruit.body.position.y - tapY;
@@ -707,26 +971,39 @@ export default function App() {
     return false;
   };
 
-  // Direct canvas pointer event helpers
+  // Direct canvas pointer event helpers with pointer capture & Zero-G tap isolation
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (gameState.status !== 'PLAYING') return;
+    if (isMenuOpen || isHowToPlayOpen || isEvolutionTreeOpen) return;
+
+    try {
+      e.currentTarget.setPointerCapture(e.pointerId);
+    } catch {}
+
     const rect = e.currentTarget.getBoundingClientRect();
-    if (rect.width > 0) {
+    if (rect.width > 0 && rect.height > 0) {
       const x = ((e.clientX - rect.left) / rect.width) * canvasWidth;
       const y = ((e.clientY - rect.top) / rect.height) * canvasHeight;
 
       if (checkZeroGTapImpulse(x, y)) {
+        zeroGTapHandledRef.current = true;
+        isPointerDownRef.current = false;
         return;
       }
 
       targetDropperXRef.current = x;
       dropperXRef.current = x;
     }
+
+    zeroGTapHandledRef.current = false;
     isPointerDownRef.current = true;
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
     if (gameState.status !== 'PLAYING') return;
+    if (isMenuOpen || isHowToPlayOpen || isEvolutionTreeOpen) return;
+    if (zeroGTapHandledRef.current) return;
+
     const rect = e.currentTarget.getBoundingClientRect();
     if (rect.width > 0) {
       const x = ((e.clientX - rect.left) / rect.width) * canvasWidth;
@@ -735,26 +1012,55 @@ export default function App() {
   };
 
   const handleCanvasPointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (gameState.status !== 'PLAYING') return;
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {}
+
+    if (zeroGTapHandledRef.current) {
+      zeroGTapHandledRef.current = false;
+      isPointerDownRef.current = false;
+      return;
+    }
+
+    if (gameState.status !== 'PLAYING') {
+      isPointerDownRef.current = false;
+      return;
+    }
+
+    const wasPointerDown = isPointerDownRef.current;
+    isPointerDownRef.current = false;
+    if (!wasPointerDown) return;
+
     const rect = e.currentTarget.getBoundingClientRect();
     if (rect.width > 0) {
       const x = ((e.clientX - rect.left) / rect.width) * canvasWidth;
-      const y = ((e.clientY - rect.top) / rect.height) * canvasHeight;
-
-      if (checkZeroGTapImpulse(x, y)) {
-        isPointerDownRef.current = false;
-        return;
-      }
-
       targetDropperXRef.current = x;
     }
-    isPointerDownRef.current = false;
     dropFruit();
+  };
+
+  const handleCanvasPointerCancel = (
+    e: React.PointerEvent<HTMLCanvasElement>,
+  ) => {
+    try {
+      if (e.currentTarget.hasPointerCapture(e.pointerId)) {
+        e.currentTarget.releasePointerCapture(e.pointerId);
+      }
+    } catch {}
+    zeroGTapHandledRef.current = false;
+    isPointerDownRef.current = false;
   };
 
   // Main Update Simulation
   const update = (deltaTime: number) => {
-    if (gameState.status !== 'PLAYING' || isMenuOpen || isHowToPlayOpen || isEvolutionTreeOpen) {
+    if (
+      gameState.status !== 'PLAYING' ||
+      isMenuOpen ||
+      isHowToPlayOpen ||
+      isEvolutionTreeOpen
+    ) {
       return;
     }
 
@@ -762,20 +1068,61 @@ export default function App() {
     const now = performance.now();
     const defaultGravity = (getConfig('gravityY') as number) || 1.5;
 
-    // 0. Update Cooldowns and Anti-Gravity / Magnet Timers
+    // 0. Update Cooldowns and Anti-Gravity / Magnet Timers (integer-guarded setState)
     if (antiGravityCdTimerRef.current > 0) {
-      antiGravityCdTimerRef.current = Math.max(0, antiGravityCdTimerRef.current - deltaTime);
-      setAntiGravityCooldown(Math.ceil(antiGravityCdTimerRef.current));
+      antiGravityCdTimerRef.current = Math.max(
+        0,
+        antiGravityCdTimerRef.current - deltaTime,
+      );
+      const nextInt = Math.ceil(antiGravityCdTimerRef.current);
+      if (nextInt !== lastDisplayedAgCdRef.current) {
+        lastDisplayedAgCdRef.current = nextInt;
+        setAntiGravityCooldown(nextInt);
+      }
     }
 
     if (magnetCdTimerRef.current > 0) {
-      magnetCdTimerRef.current = Math.max(0, magnetCdTimerRef.current - deltaTime);
-      setMagnetCooldown(Math.ceil(magnetCdTimerRef.current));
+      magnetCdTimerRef.current = Math.max(
+        0,
+        magnetCdTimerRef.current - deltaTime,
+      );
+      const nextMagInt = Math.ceil(magnetCdTimerRef.current);
+      if (nextMagInt !== lastDisplayedMagCdRef.current) {
+        lastDisplayedMagCdRef.current = nextMagInt;
+        setMagnetCooldown(nextMagInt);
+      }
+    }
+
+    // Decay Combo Timer & Screen Shake
+    if (comboTimerRef.current > 0) {
+      comboTimerRef.current = Math.max(0, comboTimerRef.current - deltaTime);
+      if (comboTimerRef.current <= 0) {
+        comboCountRef.current = 0;
+      }
+    }
+
+    if (screenShakeRef.current > 0) {
+      screenShakeRef.current = Math.max(
+        0,
+        screenShakeRef.current - deltaTime * 28,
+      );
+      if (screenShakeRef.current < 0.1) {
+        screenShakeRef.current = 0;
+      }
     }
 
     // Anti-Gravity Physics Phase & Gravity Adjustment
     if (antiGravityTimerRef.current > 0) {
-      antiGravityTimerRef.current -= deltaTime;
+      antiGravityTimerRef.current = Math.max(
+        0,
+        antiGravityTimerRef.current - deltaTime,
+      );
+      const nextActiveInt = Math.ceil(antiGravityTimerRef.current);
+      if (nextActiveInt !== lastDisplayedAgActiveSecRef.current) {
+        lastDisplayedAgActiveSecRef.current = nextActiveInt;
+        setAntiGravityActiveSec(nextActiveInt);
+      }
+
       if (engineRef.current) {
         if (antiGravityTimerRef.current > 2.0) {
           // First 3 seconds: negative gravity -0.3
@@ -803,11 +1150,16 @@ export default function App() {
         // Anti-Gravity Ended: Remove ceiling, restore normal gravity
         if (engineRef.current) {
           if (antiGravityCeilingRef.current) {
-            Matter.Composite.remove(engineRef.current.world, antiGravityCeilingRef.current);
+            Matter.Composite.remove(
+              engineRef.current.world,
+              antiGravityCeilingRef.current,
+            );
             antiGravityCeilingRef.current = null;
           }
           engineRef.current.world.gravity.y = defaultGravity;
         }
+        lastDisplayedAgActiveSecRef.current = 0;
+        setAntiGravityActiveSec(0);
         setAntiGravityActive(false);
         // Suppress danger line for 2.0s after settling
         dangerGraceCooldownRef.current = 2.0;
@@ -815,11 +1167,14 @@ export default function App() {
       }
     } else {
       if (dangerGraceCooldownRef.current > 0) {
-        dangerGraceCooldownRef.current = Math.max(0, dangerGraceCooldownRef.current - deltaTime);
+        dangerGraceCooldownRef.current = Math.max(
+          0,
+          dangerGraceCooldownRef.current - deltaTime,
+        );
       }
     }
 
-    // Active Magnet Pull Simulation
+    // Active Magnet Pull Simulation (mass-scaled + anti-stuck hop)
     if (activeMagnetRef.current && engineRef.current) {
       const mag = activeMagnetRef.current;
       const fruitA = fruitsRef.current.get(mag.fruitAId);
@@ -832,13 +1187,43 @@ export default function App() {
         const dy = posB.y - posA.y;
         const dist = Math.hypot(dx, dy);
 
-        if (dist > 15) {
-          const forceMag = 0.0035 * (1 + (mag.totalFrames - mag.remainingFrames) / mag.totalFrames * 2.5);
-          const fx = (dx / dist) * forceMag * fruitA.body.mass;
-          const fy = (dy / dist) * forceMag * fruitA.body.mass;
+        if (dist > 1) {
+          const nx = dx / dist;
+          const ny = dy / dist;
+          const progress = Math.max(
+            0,
+            Math.min(
+              1,
+              (mag.totalSeconds - mag.remainingSeconds) / mag.totalSeconds,
+            ),
+          );
+          const forceMag = 0.0038 * (1 + progress * 2.5);
 
-          Matter.Body.applyForce(fruitA.body, posA, {x: fx, y: fy});
-          Matter.Body.applyForce(fruitB.body, posB, {x: -fx, y: -fy});
+          if (dist > 12) {
+            Matter.Body.applyForce(fruitA.body, posA, {
+              x: nx * forceMag * fruitA.body.mass,
+              y: ny * forceMag * fruitA.body.mass,
+            });
+            Matter.Body.applyForce(fruitB.body, posB, {
+              x: -nx * forceMag * fruitB.body.mass,
+              y: -ny * forceMag * fruitB.body.mass,
+            });
+          }
+
+          // Anti-stuck hop: if obstructed by neighbors and approach speed stalls
+          const approachSpeed =
+            (fruitA.body.velocity.x - fruitB.body.velocity.x) * nx +
+            (fruitA.body.velocity.y - fruitB.body.velocity.y) * ny;
+          if (dist > 20 && approachSpeed < 1.0) {
+            Matter.Body.applyForce(fruitA.body, posA, {
+              x: 0,
+              y: -0.0014 * fruitA.body.mass,
+            });
+            Matter.Body.applyForce(fruitB.body, posB, {
+              x: 0,
+              y: -0.0014 * fruitB.body.mass,
+            });
+          }
         }
 
         // Magnet electric arc particles
@@ -858,8 +1243,8 @@ export default function App() {
           });
         }
 
-        mag.remainingFrames -= 1;
-        if (mag.remainingFrames <= 0) {
+        mag.remainingSeconds -= deltaTime;
+        if (mag.remainingSeconds <= 0) {
           activeMagnetRef.current = null;
           setMagnetActive(false);
         }
@@ -869,28 +1254,14 @@ export default function App() {
       }
     }
 
-    // 1. Process Input for Dropper Position
+    // 1. Continuous Smooth Keyboard Aiming
     if (input) {
-      if (input.pointer.x > 0 && input.pointer.y > 0) {
-        targetDropperXRef.current = input.pointer.x;
-      }
       if (input.actions.left) {
-        targetDropperXRef.current -= 500 * deltaTime;
+        targetDropperXRef.current -= 560 * deltaTime;
       }
       if (input.actions.right) {
-        targetDropperXRef.current += 500 * deltaTime;
+        targetDropperXRef.current += 560 * deltaTime;
       }
-
-      // Check drop trigger on pointer release or confirm/down action
-      const justReleasedPointer =
-        isPointerDownRef.current && !input.pointer.down;
-      const justPressedConfirm =
-        input.actions.confirm || input.actions.down || input.actions.tap;
-
-      if (justReleasedPointer || justPressedConfirm) {
-        dropFruit();
-      }
-      isPointerDownRef.current = input.pointer.down;
     }
 
     // Smooth lerp dropper position
@@ -911,7 +1282,7 @@ export default function App() {
       Matter.Engine.update(engineRef.current, deltaTime * 1000);
     }
 
-    // 3. Process Merges with Race Condition Guard
+    // 3. Process Merges with Race Condition Guard + Combo System
     if (mergeQueueRef.current.length > 0 && engineRef.current) {
       const world = engineRef.current.world;
       const mergesToProcess = [...mergeQueueRef.current];
@@ -939,9 +1310,34 @@ export default function App() {
         fruitsRef.current.delete(idA);
         fruitsRef.current.delete(idB);
 
+        // Combo & Session Stat Tracking
+        if (comboTimerRef.current > 0) {
+          comboCountRef.current += 1;
+        } else {
+          comboCountRef.current = 1;
+        }
+        comboTimerRef.current =
+          (getConfig('comboWindowSeconds') as number) || 2.2;
+
+        totalMergesRef.current += 1;
+        setTotalMerges(totalMergesRef.current);
+
+        if (comboCountRef.current > maxComboRef.current) {
+          maxComboRef.current = comboCountRef.current;
+          setMaxCombo(maxComboRef.current);
+        }
+
         const currentTierNum = fruitA.tier;
+        const achievedTier = Math.min(13, currentTierNum + 1);
+        if (achievedTier > highestTierRef.current) {
+          highestTierRef.current = achievedTier;
+          setHighestTier(achievedTier);
+        }
+
         const currentTierConfig = FRUIT_TIERS[currentTierNum - 1];
         const pointsEarned = currentTierConfig ? currentTierConfig.points : 2;
+        const comboMult = Math.min(3.0, 1 + (comboCountRef.current - 1) * 0.25);
+        const earnedPoints = Math.round(pointsEarned * comboMult);
 
         // Audio juice
         if (currentTierNum >= 12) {
@@ -954,23 +1350,83 @@ export default function App() {
           gameAudio.playCoinPickup();
         }
 
-        // Particle Burst
-        spawnJuiceSplash(midX, midY, currentTierConfig.color, 24);
-
-        // Check if merging 2 King Durians (Tier 13) -> Pinnacle Ultimate Victory!
-        if (currentTierNum >= 13) {
-          const victoryPoints = 10000;
+        if (comboCountRef.current >= 2) {
+          gameAudio.playComboChime(comboCountRef.current);
+          const comboColor =
+            comboCountRef.current >= 5
+              ? '#F43F5E'
+              : comboCountRef.current >= 3
+              ? '#F59E0B'
+              : '#10B981';
           spawnScorePopup(
             midX,
-            midY,
-            `+${victoryPoints} 👑 KING DURIAN PINNACLE!`,
-            '#9EF01A',
+            Math.max(125, midY - 38),
+            `🔥 ${comboCountRef.current}x COMBO!`,
+            comboColor,
+            27,
+            0.7,
           );
+        }
+
+        // Particle Burst
+        spawnJuiceSplash(
+          midX,
+          midY,
+          currentTierConfig ? currentTierConfig.color : '#F59E0B',
+          24,
+        );
+
+        // Check if merging 2 King Durians (Tier 13) -> Pinnacle Ultimate Victory / Endless Supernova!
+        if (currentTierNum >= 13) {
+          const victoryPoints = Math.round(10000 * comboMult);
+          spawnShockwave(midX, midY, 260, '#FFD700', 8);
+          spawnShockwave(midX, midY, 180, '#9EF01A', 5);
           spawnJuiceSplash(midX, midY, '#FFD700', 60, true);
+          screenShakeRef.current = 12;
           gameAudio.playChiptuneExplosion();
 
+          // Gentle radial push on remaining fruits
+          fruitsRef.current.forEach((other) => {
+            if (other.merged) return;
+            const ox = other.body.position.x - midX;
+            const oy = other.body.position.y - midY;
+            const od = Math.hypot(ox, oy);
+            if (od > 1 && od < 380) {
+              const falloff = 1 - od / 380;
+              const push = 0.004 * falloff * other.body.mass;
+              Matter.Body.applyForce(other.body, other.body.position, {
+                x: (ox / od) * push,
+                y: (oy / od) * push - 0.0012 * falloff * other.body.mass,
+              });
+            }
+          });
+
           updateScoreWithHighScore(victoryPoints);
-          setGameState((prev) => ({...prev, status: 'VICTORY'}));
+
+          const shouldPromptVictory =
+            (getConfig('kingDurianVictory') as boolean) !== false &&
+            !isEndlessModeRef.current;
+
+          if (shouldPromptVictory) {
+            spawnScorePopup(
+              midX,
+              midY,
+              `+${victoryPoints} 👑 KING DURIAN PINNACLE!`,
+              '#9EF01A',
+              28,
+              0.75,
+            );
+            setGameState((prev) => ({...prev, status: 'VICTORY'}));
+          } else {
+            spawnScorePopup(
+              midX,
+              midY,
+              `👑 +${victoryPoints} SUPERNOVA CLEAR!`,
+              '#FFD700',
+              30,
+              0.8,
+            );
+          }
           return;
         }
 
@@ -979,8 +1435,12 @@ export default function App() {
         const nextTierConfig = FRUIT_TIERS[nextTierNum - 1];
         const radius = nextTierConfig.radius;
         const restitution = (getConfig('fruitRestitution') as number) || 0.22;
-        const friction = nextTierConfig.friction ?? ((getConfig('fruitFriction') as number) || 0.08);
-        const densityScale = nextTierConfig.density ?? ((getConfig('fruitDensityMultiplier') as number) || 0.002);
+        const friction =
+          nextTierConfig.friction ??
+          ((getConfig('fruitFriction') as number) || 0.08);
+        const densityScale =
+          nextTierConfig.density ??
+          ((getConfig('fruitDensityMultiplier') as number) || 0.002);
 
         // Clamp spawn position safely within the jar enclosure
         const clampedSpawnX = Math.max(
@@ -992,12 +1452,17 @@ export default function App() {
           Math.min(jarBottom - radius - 4, midY),
         );
 
-        const newBody = Matter.Bodies.circle(clampedSpawnX, clampedSpawnY, radius, {
-          restitution,
-          friction,
-          density: densityScale * (1 + nextTierNum * 0.15),
-          label: 'fruit',
-        });
+        const newBody = Matter.Bodies.circle(
+          clampedSpawnX,
+          clampedSpawnY,
+          radius,
+          {
+            restitution,
+            friction,
+            density: densityScale * (1 + nextTierNum * 0.15),
+            label: 'fruit',
+          },
+        );
 
         // Smoothly stabilize physics state on newly spawned fruit
         Matter.Body.setVelocity(newBody, {
@@ -1015,6 +1480,11 @@ export default function App() {
           spawnTime: now,
           renderScale: 0.2, // Bouncy pop scale-in
           targetScale: 1.0,
+          squashX: 1.32,
+          squashY: 0.72,
+          squashVelX: 0,
+          squashVelY: 0,
+          lastImpactTime: now,
           blinkTimer: 1 + Math.random() * 3,
           isBlinking: false,
           expression: nextTierNum === 13 ? 'regal' : 'bouncy',
@@ -1024,30 +1494,152 @@ export default function App() {
 
         fruitsRef.current.set(newBody.id, newEntity);
 
+        // Expanding shockwave ring
+        spawnShockwave(
+          clampedSpawnX,
+          clampedSpawnY,
+          radius * 2.15 + comboCountRef.current * 14,
+          nextTierConfig.color,
+          comboCountRef.current >= 3 || nextTierNum >= 8 ? 6 : 4,
+        );
+
+        if (nextTierNum === 13) {
+          spawnJuiceSplash(clampedSpawnX, clampedSpawnY, '#FFD700', 40, true);
+        }
+
+        // Subtle radial shockwave push & screen shake on combos >= 3 or high-tier merges >= 8
+        if (comboCountRef.current >= 3 || nextTierNum >= 8) {
+          const shakeImpulse = Math.min(
+            9,
+            2.2 +
+              (comboCountRef.current >= 3 ? comboCountRef.current * 0.85 : 0) +
+              (nextTierNum >= 8 ? (nextTierNum - 7) * 1.1 : 0),
+          );
+          screenShakeRef.current = Math.max(
+            screenShakeRef.current,
+            shakeImpulse,
+          );
+
+          const blastRadius = radius * 2.8 + 60;
+          fruitsRef.current.forEach((other) => {
+            if (other.body.id === newBody.id || other.merged) return;
+            const ox = other.body.position.x - clampedSpawnX;
+            const oy = other.body.position.y - clampedSpawnY;
+            const od = Math.hypot(ox, oy);
+            if (od > 1 && od < blastRadius) {
+              const falloff = 1 - od / blastRadius;
+              const push = 0.0022 * falloff * other.body.mass;
+              Matter.Body.applyForce(other.body, other.body.position, {
+                x: (ox / od) * push,
+                y: (oy / od) * push - 0.0006 * falloff * other.body.mass,
+              });
+            }
+          });
+        }
+
         // Float score popup
         spawnScorePopup(
           clampedSpawnX,
           clampedSpawnY,
-          `+${pointsEarned} ${nextTierConfig.name}!`,
+          `+${earnedPoints} ${nextTierConfig.name}!`,
           nextTierConfig.color,
+          nextTierNum >= 9 ? 26 : 24,
+          0.55,
         );
 
         // Update score & highscore in sync
-        updateScoreWithHighScore(pointsEarned);
+        updateScoreWithHighScore(earnedPoints);
       });
     }
 
-    // 4. Update Fruits Animations, Expressions & Danger Line Check
+    // 4. Update Fruits Rescue Clamp, Squash Springs, Animations & Danger Line Check
     let settledBreach = false;
-    const isAntiGravityRunning = antiGravityTimerRef.current > 0 || dangerGraceCooldownRef.current > 0;
+    const isAntiGravityRunning =
+      antiGravityTimerRef.current > 0 || dangerGraceCooldownRef.current > 0;
+    const springDt = Math.min(deltaTime, 0.033);
+    const springStiffness = 230;
+    const springDamping = 15;
 
     fruitsRef.current.forEach((fruit) => {
+      const fruitRadius = FRUIT_TIERS[fruit.tier - 1]?.radius || 22;
+
+      // Safety rescue clamp: prevent multi-body pressure from ever forcing a fruit outside jar bounds
+      const minX = jarX + fruitRadius;
+      const maxX = jarRight - fruitRadius;
+      const maxY = jarBottom - fruitRadius;
+      const minY =
+        antiGravityTimerRef.current > 0 ? 110 + fruitRadius : 60 + fruitRadius;
+      const pos = fruit.body.position;
+      let clampedX = pos.x;
+      let clampedY = pos.y;
+      let vx = fruit.body.velocity.x;
+      let vy = fruit.body.velocity.y;
+      let needsRescue = false;
+
+      if (pos.x < minX) {
+        clampedX = minX;
+        if (vx < 0) vx = 0;
+        needsRescue = true;
+      } else if (pos.x > maxX) {
+        clampedX = maxX;
+        if (vx > 0) vx = 0;
+        needsRescue = true;
+      }
+
+      if (pos.y > maxY) {
+        clampedY = maxY;
+        if (vy > 0) vy = 0;
+        needsRescue = true;
+      } else if (pos.y < minY) {
+        clampedY = minY;
+        if (vy < 0) vy = 0;
+        needsRescue = true;
+      }
+
+      if (needsRescue) {
+        Matter.Body.setPosition(fruit.body, {x: clampedX, y: clampedY});
+        Matter.Body.setVelocity(fruit.body, {x: vx, y: vy});
+      }
+
       // Elastic scale-in animation
       if (fruit.renderScale < fruit.targetScale) {
-        fruit.renderScale += (fruit.targetScale - fruit.renderScale) * Math.min(1, 16 * deltaTime);
+        fruit.renderScale +=
+          (fruit.targetScale - fruit.renderScale) * Math.min(1, 16 * deltaTime);
         if (Math.abs(fruit.renderScale - fruit.targetScale) < 0.01) {
           fruit.renderScale = fruit.targetScale;
         }
+      }
+
+      // Spring-damper squash-and-stretch integration back toward 1.0
+      const accX =
+        (1.0 - fruit.squashX) * springStiffness -
+        fruit.squashVelX * springDamping;
+      const accY =
+        (1.0 - fruit.squashY) * springStiffness -
+        fruit.squashVelY * springDamping;
+      fruit.squashVelX += accX * springDt;
+      fruit.squashVelY += accY * springDt;
+      fruit.squashX = Math.max(
+        0.68,
+        Math.min(1.38, fruit.squashX + fruit.squashVelX * springDt),
+      );
+      fruit.squashY = Math.max(
+        0.68,
+        Math.min(1.38, fruit.squashY + fruit.squashVelY * springDt),
+      );
+      if (
+        Math.abs(fruit.squashX - 1) < 0.003 &&
+        Math.abs(fruit.squashVelX) < 0.02
+      ) {
+        fruit.squashX = 1;
+        fruit.squashVelX = 0;
+      }
+      if (
+        Math.abs(fruit.squashY - 1) < 0.003 &&
+        Math.abs(fruit.squashVelY) < 0.02
+      ) {
+        fruit.squashY = 1;
+        fruit.squashVelY = 0;
       }
 
       // Blink animation
@@ -1074,10 +1666,7 @@ export default function App() {
       // Danger line is strictly suppressed during Anti-Gravity and its cooldown grace
       if (!isAntiGravityRunning) {
         const ageSeconds = (now - fruit.spawnTime) / 1000;
-        const vx = fruit.body.velocity.x;
-        const vy = fruit.body.velocity.y;
-        const speed = Math.hypot(vx, vy);
-        const fruitRadius = FRUIT_TIERS[fruit.tier - 1]?.radius || 20;
+        const speed = Math.hypot(fruit.body.velocity.x, fruit.body.velocity.y);
         const topY = fruit.body.position.y - fruitRadius;
 
         // Fruit is settled, older than 2s, and stacked over danger line
@@ -1103,7 +1692,20 @@ export default function App() {
       );
     }
 
-    // 6. Update Particles
+    // 6. Update Shockwave Rings
+    for (let i = shockwavesRef.current.length - 1; i >= 0; i--) {
+      const sw = shockwavesRef.current[i];
+      sw.life += deltaTime;
+      const t = Math.min(1, sw.life / sw.maxLife);
+      const easeOut = 1 - Math.pow(1 - t, 3);
+      sw.radius = sw.maxRadius * (0.2 + 0.8 * easeOut);
+      sw.alpha = Math.max(0, (1 - t) * 0.85);
+      if (sw.life >= sw.maxLife) {
+        shockwavesRef.current.splice(i, 1);
+      }
+    }
+
+    // 7. Update Particles
     for (let i = particlesRef.current.length - 1; i >= 0; i--) {
       const p = particlesRef.current[i];
       p.x += p.vx;
@@ -1121,7 +1723,7 @@ export default function App() {
       }
     }
 
-    // 7. Update Score Popups
+    // 8. Update Score Popups
     for (let i = scorePopupsRef.current.length - 1; i >= 0; i--) {
       const s = scorePopupsRef.current[i];
       s.y -= 45 * deltaTime;
@@ -1402,6 +2004,15 @@ export default function App() {
     ctx.fillStyle = 'rgba(253, 246, 227, 0.25)';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
+    // Playfield container with subtle screen-shake transform
+    ctx.save();
+    if (screenShakeRef.current > 0) {
+      const shakeMag = screenShakeRef.current;
+      const sx = (Math.random() - 0.5) * 2 * shakeMag;
+      const sy = (Math.random() - 0.5) * 2 * shakeMag;
+      ctx.translate(sx, sy);
+    }
+
     // 2. Render Wooden Shelf & Jar Backdrop
     ctx.save();
     // Glass Jar Interior Glow
@@ -1476,7 +2087,10 @@ export default function App() {
     ctx.save();
     const dangerGrace = (getConfig('dangerGraceSeconds') as number) || 2.5;
     const dangerRatio = Math.min(1, dangerTimerRef.current / dangerGrace);
-    const isDangerActive = dangerTimerRef.current > 0.05 && antiGravityTimerRef.current <= 0 && dangerGraceCooldownRef.current <= 0;
+    const isDangerActive =
+      dangerTimerRef.current > 0.05 &&
+      antiGravityTimerRef.current <= 0 &&
+      dangerGraceCooldownRef.current <= 0;
 
     ctx.lineWidth = isDangerActive ? 3.5 : 2;
     ctx.setLineDash([8, 8]);
@@ -1496,7 +2110,7 @@ export default function App() {
       ctx.font = 'bold 15px ' + THEME.fontFamily;
       ctx.textAlign = 'center';
       ctx.fillText(
-        `DANGER! ${Math.max(0, (dangerGrace - dangerTimerRef.current)).toFixed(1)}s`,
+        `DANGER! ${Math.max(0, dangerGrace - dangerTimerRef.current).toFixed(1)}s`,
         canvasWidth / 2,
         dangerLineY - 10,
       );
@@ -1507,7 +2121,7 @@ export default function App() {
     }
     ctx.restore();
 
-    // 3.5 Magnet Electric Laser Beam Rendering
+    // 3.5 Magnet Electric Laser Beam Rendering (with Zero-Dist NaN Guard)
     if (activeMagnetRef.current) {
       const mag = activeMagnetRef.current;
       const fA = fruitsRef.current.get(mag.fruitAId);
@@ -1517,6 +2131,7 @@ export default function App() {
         ctx.save();
         const pA = fA.body.position;
         const pB = fB.body.position;
+        const segLen = Math.hypot(pB.x - pA.x, pB.y - pA.y);
 
         // Outer neon glow beam
         ctx.strokeStyle = 'rgba(6, 182, 212, 0.85)';
@@ -1534,28 +2149,41 @@ export default function App() {
         ctx.lineTo(pB.x, pB.y);
         ctx.stroke();
 
-        // Sinuous electric arcs
-        ctx.strokeStyle = '#F59E0B';
-        ctx.lineWidth = 2.5;
-        ctx.beginPath();
-        const segs = 8;
-        ctx.moveTo(pA.x, pA.y);
-        for (let i = 1; i < segs; i++) {
-          const t = i / segs;
-          const mx = pA.x + (pB.x - pA.x) * t;
-          const my = pA.y + (pB.y - pA.y) * t;
-          const offset = (Math.sin(performance.now() * 0.05 + i * 2) * 12) * (1 - Math.abs(t - 0.5) * 2);
-          ctx.lineTo(mx - (pB.y - pA.y) / Math.hypot(pB.x - pA.x, pB.y - pA.y) * offset, my + (pB.x - pA.x) / Math.hypot(pB.x - pA.x, pB.y - pA.y) * offset);
+        // Sinuous electric arcs (guarded against 0/0 NaN when centers overlap)
+        if (segLen > 1) {
+          ctx.strokeStyle = '#F59E0B';
+          ctx.lineWidth = 2.5;
+          ctx.beginPath();
+          const segs = 8;
+          const perpX = -(pB.y - pA.y) / segLen;
+          const perpY = (pB.x - pA.x) / segLen;
+          ctx.moveTo(pA.x, pA.y);
+          for (let i = 1; i < segs; i++) {
+            const t = i / segs;
+            const mx = pA.x + (pB.x - pA.x) * t;
+            const my = pA.y + (pB.y - pA.y) * t;
+            const offset =
+              Math.sin(performance.now() * 0.05 + i * 2) *
+              12 *
+              (1 - Math.abs(t - 0.5) * 2);
+            ctx.lineTo(mx + perpX * offset, my + perpY * offset);
+          }
+          ctx.lineTo(pB.x, pB.y);
+          ctx.stroke();
         }
-        ctx.lineTo(pB.x, pB.y);
-        ctx.stroke();
 
         // Magnetic rings around both fruit centers
         [pA, pB].forEach((pt) => {
           ctx.strokeStyle = 'rgba(245, 158, 11, 0.9)';
           ctx.lineWidth = 3;
           ctx.beginPath();
-          ctx.arc(pt.x, pt.y, 20 + Math.sin(performance.now() * 0.02) * 8, 0, Math.PI * 2);
+          ctx.arc(
+            pt.x,
+            pt.y,
+            20 + Math.sin(performance.now() * 0.02) * 8,
+            0,
+            Math.PI * 2,
+          );
           ctx.stroke();
         });
 
@@ -1563,7 +2191,19 @@ export default function App() {
       }
     }
 
-    // 4. Render Active Physics Fruits
+    // 3.8 Render Expanding Shockwave Rings
+    shockwavesRef.current.forEach((sw) => {
+      ctx.save();
+      ctx.globalAlpha = sw.alpha;
+      ctx.strokeStyle = sw.color;
+      ctx.lineWidth = Math.max(1.5, sw.lineWidth * (0.4 + 0.6 * sw.alpha));
+      ctx.beginPath();
+      ctx.arc(sw.x, sw.y, sw.radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+    });
+
+    // 4. Render Active Physics Fruits (world-axis squash applied BEFORE sprite rotation)
     fruitsRef.current.forEach((fruit) => {
       const {x, y} = fruit.body.position;
       const angle = fruit.body.angle;
@@ -1572,8 +2212,11 @@ export default function App() {
 
       ctx.save();
       ctx.translate(x, y);
+      ctx.scale(
+        fruit.renderScale * fruit.squashX,
+        fruit.renderScale * fruit.squashY,
+      );
       ctx.rotate(angle);
-      ctx.scale(fruit.renderScale, fruit.renderScale);
 
       // Render fruit body (procedural or sprite)
       drawFruitBody(ctx, tierConfig, radius);
@@ -1584,36 +2227,191 @@ export default function App() {
       ctx.restore();
     });
 
-    // 5. Render Dropper, Guideline & Active Fruit (when game is playing)
+    // 5. Render Smart Swept-Circle Raycast Aiming & Dropper Fruit (when game is playing)
     if (gameState.status === 'PLAYING') {
       const activeTierConfig =
         FRUIT_TIERS[currentTierRef.current - 1] || FRUIT_TIERS[0];
       const radius = activeTierConfig.radius;
-      const curDropperX = dropperXRef.current;
+      const curDropperX = Math.max(
+        jarX + radius + 4,
+        Math.min(jarRight - radius - 4, dropperXRef.current),
+      );
       const timeSinceDrop = performance.now() - lastDropTimeRef.current;
       const cooldown = (getConfig('dropCooldownMs') as number) || 450;
       const readyProgress = Math.min(1, timeSinceDrop / cooldown);
       const isReady = readyProgress >= 1;
       const dropperScale = 0.5 + 0.5 * Math.min(1, readyProgress * 1.1);
 
-      // Vertical Dashed Guideline
-      ctx.save();
-      ctx.setLineDash([8, 8]);
-      ctx.strokeStyle = isReady
-        ? 'rgba(140, 88, 50, 0.45)'
-        : 'rgba(140, 88, 50, 0.2)';
-      ctx.lineWidth = isReady ? 2.5 : 1.5;
-      ctx.beginPath();
-      ctx.moveTo(curDropperX, dropperY + radius);
-      ctx.lineTo(curDropperX, jarBottom - 10);
-      ctx.stroke();
+      // Swept-circle raycast against jar floor and all non-merged fruits
+      let landingCenterY = jarBottom - radius;
+      let hitFruit: FruitEntity | null = null;
 
-      // Aim target circle on jar floor
-      ctx.setLineDash([]);
-      ctx.fillStyle = isReady ? 'rgba(245, 158, 11, 0.35)' : 'rgba(140, 88, 50, 0.15)';
-      ctx.beginPath();
-      ctx.ellipse(curDropperX, jarBottom - 10, radius * 0.8, 6, 0, 0, Math.PI * 2);
-      ctx.fill();
+      fruitsRef.current.forEach((f) => {
+        if (f.merged) return;
+        const fx = f.body.position.x;
+        const fy = f.body.position.y;
+        const fr = FRUIT_TIERS[f.tier - 1]?.radius || 22;
+        const dx = Math.abs(curDropperX - fx);
+        const sumR = radius + fr;
+        if (dx < sumR && fy > dropperY) {
+          const candY = fy - Math.sqrt(sumR * sumR - dx * dx);
+          if (candY < landingCenterY) {
+            landingCenterY = candY;
+            hitFruit = f;
+          }
+        }
+      });
+      landingCenterY = Math.max(dropperY + radius, landingCenterY);
+
+      const matchedFruit = hitFruit as FruitEntity | null;
+      const isMergeTarget =
+        matchedFruit !== null && matchedFruit.tier === currentTierRef.current;
+      const isUpwardZeroG = antiGravityTimerRef.current > 2.0;
+
+      ctx.save();
+      if (isUpwardZeroG) {
+        // Dim short stub during upward Zero-G float; suppress downward landing ghost
+        ctx.setLineDash([6, 8]);
+        ctx.strokeStyle = 'rgba(168, 85, 247, 0.2)';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(curDropperX, dropperY + radius);
+        ctx.lineTo(curDropperX, Math.min(jarTop + 60, landingCenterY));
+        ctx.stroke();
+      } else {
+        const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.012);
+
+        // Highlight target matching fruit with emerald-gold halo
+        if (isMergeTarget && matchedFruit) {
+          const targetR =
+            (FRUIT_TIERS[matchedFruit.tier - 1]?.radius || radius) +
+            5 +
+            pulse * 4;
+          ctx.save();
+          ctx.strokeStyle = '#10B981';
+          ctx.lineWidth = 3.5;
+          ctx.shadowColor = '#F59E0B';
+          ctx.shadowBlur = 10;
+          ctx.beginPath();
+          ctx.arc(
+            matchedFruit.body.position.x,
+            matchedFruit.body.position.y,
+            targetR,
+            0,
+            Math.PI * 2,
+          );
+          ctx.stroke();
+
+          ctx.setLineDash([6, 6]);
+          ctx.strokeStyle = '#F59E0B';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.arc(
+            matchedFruit.body.position.x,
+            matchedFruit.body.position.y,
+            targetR + 4,
+            0,
+            Math.PI * 2,
+          );
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        // Vertical Dashed Guideline from dropper bottom to exact landing center
+        if (isMergeTarget) {
+          ctx.save();
+          ctx.strokeStyle = 'rgba(245, 158, 11, 0.35)';
+          ctx.lineWidth = 7;
+          ctx.beginPath();
+          ctx.moveTo(curDropperX, dropperY + radius);
+          ctx.lineTo(curDropperX, landingCenterY);
+          ctx.stroke();
+          ctx.restore();
+        }
+
+        ctx.setLineDash([8, 8]);
+        ctx.strokeStyle = isMergeTarget
+          ? '#10B981'
+          : isReady
+          ? 'rgba(140, 88, 50, 0.45)'
+          : 'rgba(140, 88, 50, 0.2)';
+        ctx.lineWidth = isMergeTarget ? 3 : isReady ? 2.5 : 1.5;
+        ctx.beginPath();
+        ctx.moveTo(curDropperX, dropperY + radius);
+        ctx.lineTo(curDropperX, landingCenterY);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Translucent Ghost Landing Circle at exact swept-circle contact center
+        ctx.fillStyle = isMergeTarget
+          ? `rgba(16, 185, 129, ${0.15 + pulse * 0.1})`
+          : isReady
+          ? 'rgba(255, 255, 255, 0.18)'
+          : 'rgba(255, 255, 255, 0.08)';
+        ctx.beginPath();
+        ctx.arc(curDropperX, landingCenterY, radius, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.setLineDash(isMergeTarget ? [] : [5, 5]);
+        ctx.strokeStyle = isMergeTarget
+          ? '#10B981'
+          : isReady
+          ? 'rgba(245, 158, 11, 0.55)'
+          : 'rgba(140, 88, 50, 0.25)';
+        ctx.lineWidth = isMergeTarget ? 3 : 2;
+        ctx.beginPath();
+        ctx.arc(curDropperX, landingCenterY, radius, 0, Math.PI * 2);
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        if (isMergeTarget) {
+          // Inner gold accent ring + crisp "✨ MERGE!" indicator pill
+          ctx.strokeStyle = '#F59E0B';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.arc(
+            curDropperX,
+            landingCenterY,
+            Math.max(4, radius - 4),
+            0,
+            Math.PI * 2,
+          );
+          ctx.stroke();
+
+          const pillW = 94;
+          const pillH = 22;
+          const pillX = Math.max(
+            jarX + pillW / 2 + 6,
+            Math.min(jarRight - pillW / 2 - 6, curDropperX),
+          );
+          const pillY = Math.max(
+            dropperY + radius + 20,
+            landingCenterY - radius - 16,
+          );
+
+          ctx.fillStyle = 'rgba(6, 95, 70, 0.92)';
+          ctx.strokeStyle = '#F59E0B';
+          ctx.lineWidth = 2;
+          ctx.beginPath();
+          ctx.roundRect(pillX - pillW / 2, pillY - pillH / 2, pillW, pillH, 11);
+          ctx.fill();
+          ctx.stroke();
+
+          ctx.font = '800 12px ' + THEME.fontFamily;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillStyle = '#FDE68A';
+          ctx.fillText('✨ MERGE!', pillX, pillY + 0.5);
+        } else {
+          // Center landing dot
+          ctx.fillStyle = isReady
+            ? 'rgba(245, 158, 11, 0.65)'
+            : 'rgba(140, 88, 50, 0.3)';
+          ctx.beginPath();
+          ctx.arc(curDropperX, landingCenterY, 3.5, 0, Math.PI * 2);
+          ctx.fill();
+        }
+      }
       ctx.restore();
 
       // Dropper Fruit Display
@@ -1624,7 +2422,10 @@ export default function App() {
 
       // Soft glow ring when ready
       if (isReady) {
-        ctx.strokeStyle = 'rgba(245, 158, 11, 0.5)';
+        ctx.strokeStyle =
+          isMergeTarget && !isUpwardZeroG
+            ? 'rgba(16, 185, 129, 0.8)'
+            : 'rgba(245, 158, 11, 0.5)';
         ctx.lineWidth = 3;
         ctx.beginPath();
         ctx.arc(0, 0, radius + 4, 0, Math.PI * 2);
@@ -1642,9 +2443,18 @@ export default function App() {
         spawnTime: 0,
         renderScale: 1,
         targetScale: 1,
+        squashX: 1,
+        squashY: 1,
+        squashVelX: 0,
+        squashVelY: 0,
+        lastImpactTime: 0,
         blinkTimer: 0,
         isBlinking: false,
-        expression: isReady ? (currentTierRef.current === 13 ? 'regal' : 'happy') : 'sleepy',
+        expression: isReady
+          ? currentTierRef.current === 13
+            ? 'regal'
+            : 'happy'
+          : 'sleepy',
         expressionTimer: 0,
         merged: false,
       };
@@ -1684,13 +2494,79 @@ export default function App() {
       ctx.restore();
     });
 
-    // 7. Render Floating Score Popups
+    // 7. Sleek On-Canvas Combo Badge + Draining Timer Bar (upper-right of jar)
+    if (comboCountRef.current >= 2 && comboTimerRef.current > 0) {
+      const comboWindow = (getConfig('comboWindowSeconds') as number) || 2.2;
+      const ratio = Math.max(0, Math.min(1, comboTimerRef.current / comboWindow));
+      const comboMult = Math.min(3.0, 1 + (comboCountRef.current - 1) * 0.25);
+      const multText = Number.isInteger(comboMult)
+        ? `${comboMult}.0x`
+        : `${comboMult.toFixed(2).replace(/0$/, '')}x`;
+
+      const badgeW = 152;
+      const badgeH = 44;
+      const badgeX = jarRight - badgeW - 14;
+      const badgeY = jarTop + 14;
+      const pulseScale = 1 + 0.04 * Math.sin(performance.now() * 0.018);
+
+      ctx.save();
+      ctx.translate(badgeX + badgeW / 2, badgeY + badgeH / 2);
+      ctx.scale(pulseScale, pulseScale);
+      ctx.translate(-badgeW / 2, -badgeH / 2);
+
+      // Pill backdrop
+      ctx.fillStyle = 'rgba(74, 40, 16, 0.9)';
+      ctx.strokeStyle = comboCountRef.current >= 4 ? '#F43F5E' : '#F59E0B';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.roundRect(0, 0, badgeW, badgeH, 14);
+      ctx.fill();
+      ctx.stroke();
+
+      // Combo Title + Multiplier Pill
+      ctx.font = '900 14px ' + THEME.fontFamily;
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.fillStyle = '#FEF3C7';
+      ctx.fillText(`🔥 ${comboCountRef.current}x COMBO`, 10, 16);
+
+      ctx.font = '800 11px ' + THEME.fontFamily;
+      ctx.textAlign = 'right';
+      ctx.fillStyle = '#34D399';
+      ctx.fillText(multText, badgeW - 10, 16);
+
+      // Draining Timer Track
+      const barX = 10;
+      const barY = 30;
+      const barW = badgeW - 20;
+      const barH = 7;
+
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+      ctx.beginPath();
+      ctx.roundRect(barX, barY, barW, barH, 3.5);
+      ctx.fill();
+
+      // Active Draining Bar
+      if (ratio > 0) {
+        const barGrad = ctx.createLinearGradient(barX, 0, barX + barW, 0);
+        barGrad.addColorStop(0, '#F59E0B');
+        barGrad.addColorStop(1, comboCountRef.current >= 4 ? '#F43F5E' : '#10B981');
+        ctx.fillStyle = barGrad;
+        ctx.beginPath();
+        ctx.roundRect(barX, barY, Math.max(6, barW * ratio), barH, 3.5);
+        ctx.fill();
+      }
+
+      ctx.restore();
+    }
+
+    // 8. Render Floating Score Popups
     scorePopupsRef.current.forEach((s) => {
       ctx.save();
       ctx.globalAlpha = s.alpha;
       ctx.translate(s.x, s.y);
       ctx.scale(s.scale, s.scale);
-      ctx.font = '800 24px ' + THEME.fontFamily;
+      ctx.font = `800 ${s.fontSize || 24}px ${THEME.fontFamily}`;
       ctx.textAlign = 'center';
       ctx.fillStyle = '#FFFFFF';
       ctx.shadowColor = 'rgba(0,0,0,0.4)';
@@ -1702,6 +2578,9 @@ export default function App() {
       ctx.fillText(s.text, 0, 0);
       ctx.restore();
     });
+
+    // End playfield screen-shake transform
+    ctx.restore();
   };
 
   // Game Loop Ref Hookup
@@ -1713,19 +2592,33 @@ export default function App() {
   useEffect(() => {
     let raf = 0;
     const loop = (time: number) => {
-      // Cancel / Esc Key Handling
+      // Cancel / Esc Key Handling in strict top-down overlay priority
       if (inputRef.current) {
         const cancelPressed = inputRef.current.actions.cancel;
         if (cancelPressed && !lastCancelRef.current) {
-          const currentStatus = gameStateRef.current.status;
-          if (currentStatus === 'PLAYING') {
-            setIsMenuOpen((prev) => !prev);
-          } else if (currentStatus === 'START') {
-            void exitChat({});
-          } else if (
-            ['GAME_OVER', 'VICTORY'].includes(currentStatus)
-          ) {
-            setGameState((prev) => ({...prev, status: 'START'}));
+          if (isEvolutionTreeOpenRef.current) {
+            setIsEvolutionTreeOpen(false);
+            sessionPlayStartRef.current = performance.now();
+          } else if (isHowToPlayOpenRef.current) {
+            setIsHowToPlayOpen(false);
+            sessionPlayStartRef.current = performance.now();
+          } else {
+            const currentStatus = gameStateRef.current.status;
+            if (currentStatus === 'PLAYING') {
+              if (isMenuOpenRef.current) {
+                setIsMenuOpen(false);
+                sessionPlayStartRef.current = performance.now();
+              } else {
+                setIsMenuOpen(true);
+              }
+            } else if (
+              currentStatus === 'GAME_OVER' ||
+              currentStatus === 'VICTORY'
+            ) {
+              setGameState((prev) => ({...prev, status: 'START'}));
+            } else if (currentStatus === 'START') {
+              void exitChat({});
+            }
           }
         }
         lastCancelRef.current = cancelPressed;
@@ -1749,6 +2642,22 @@ export default function App() {
   // Next Fruit Asset & Info
   const nextFruitConfig = FRUIT_TIERS[nextTier - 1] || FRUIT_TIERS[0];
 
+  // Session summary stats for Game Over & Victory overlays
+  const sessionStats = [
+    {
+      label: 'Best Fruit',
+      value: FRUIT_TIERS[highestTier - 1]?.name || 'Cherry',
+    },
+    {
+      label: 'Max Combo',
+      value: `${Math.max(1, maxCombo)}x`,
+    },
+    {
+      label: 'Merges',
+      value: totalMerges,
+    },
+  ];
+
   return (
     <div
       style={{fontFamily: THEME.fontFamily}}
@@ -1765,13 +2674,14 @@ export default function App() {
         url={BACKGROUND_MUSIC_URL}
         isPlaying={isMusicPlaying}
         isMuted={musicMuted}
+        volume={(getConfig('defaultMusicVolume') as number) ?? 0.18}
       />
 
       {/* TOP DEDICATED HUD BAR */}
       <header className="w-full bg-[#EAD8C0] border-b-2 border-[#C89666] shadow-sm px-2.5 py-1.5 z-20 shrink-0 flex items-center justify-between gap-1.5 max-w-2xl mx-auto pointer-events-auto">
-        {/* Left: Score & High Score */}
-        <div className="flex items-center gap-2">
-          <div className="bg-[#FAF3E7] px-2.5 py-1 rounded-xl border border-[#D4A373] shadow-inner flex flex-col items-start min-w-[64px]">
+        {/* Left: Score, High Score & Endless Pill */}
+        <div className="flex items-center gap-1.5">
+          <div className="bg-[#FAF3E7] px-2.5 py-1 rounded-xl border border-[#D4A373] shadow-inner flex flex-col items-start min-w-[60px]">
             <span className="text-[9px] uppercase font-extrabold text-[#9A6B42] leading-none">
               SCORE
             </span>
@@ -1780,7 +2690,7 @@ export default function App() {
             </span>
           </div>
 
-          <div className="hidden xs:flex bg-[#FAF3E7] px-2.5 py-1 rounded-xl border border-[#D4A373] shadow-inner flex-col items-start min-w-[64px]">
+          <div className="hidden sm:flex bg-[#FAF3E7] px-2.5 py-1 rounded-xl border border-[#D4A373] shadow-inner flex-col items-start min-w-[60px]">
             <span className="text-[9px] uppercase font-extrabold text-[#9A6B42] leading-none flex items-center gap-1">
               <Trophy size={9} className="text-[#F59E0B]" /> BEST
             </span>
@@ -1788,6 +2698,16 @@ export default function App() {
               {Math.max(highScore, gameState.score)}
             </span>
           </div>
+
+          {isEndlessMode && (
+            <div
+              title="Endless Mode Active"
+              className="bg-gradient-to-r from-amber-400 to-yellow-300 text-[#4A2810] px-2 py-1 rounded-full border border-amber-600 shadow-sm flex items-center gap-1 shrink-0">
+              <span className="text-[10px] font-black tracking-tight leading-none">
+                ∞ ENDLESS
+              </span>
+            </div>
+          )}
         </div>
 
         {/* Center: Next Fruit Badge */}
@@ -1806,18 +2726,14 @@ export default function App() {
               borderColor: nextFruitConfig.color,
               backgroundColor: '#FFFFFF',
             }}>
-            {assetsReady && assets[nextFruitConfig.assetKey] ? (
-              <img
-                src={ASSETS_MANIFEST[nextFruitConfig.assetKey]}
-                alt={nextFruitConfig.name}
-                className="w-full h-full object-contain pointer-events-none"
-              />
-            ) : (
-              <div
-                className="w-4 h-4 rounded-full"
-                style={{backgroundColor: nextFruitConfig.color}}
-              />
-            )}
+            <FruitBadgeIcon
+              tier={nextFruitConfig}
+              assetUrl={ASSETS_MANIFEST[nextFruitConfig.assetKey]}
+              imageLoaded={Boolean(
+                assetsReady && assets[nextFruitConfig.assetKey],
+              )}
+              size={24}
+            />
           </div>
         </div>
 
@@ -1826,7 +2742,11 @@ export default function App() {
           {/* Anti-Gravity Powerup Button */}
           <button
             onClick={activateAntiGravity}
-            disabled={antiGravityCooldown > 0 || antiGravityActive || gameState.status !== 'PLAYING'}
+            disabled={
+              antiGravityCooldown > 0 ||
+              antiGravityActive ||
+              gameState.status !== 'PLAYING'
+            }
             title="Zero-G Anti-Gravity (Z / 1)"
             className={`h-9 px-2.5 rounded-xl border font-bold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-sm active:scale-95 ${
               antiGravityActive
@@ -1835,10 +2755,13 @@ export default function App() {
                 ? 'bg-purple-100/60 text-purple-400 border-purple-200 cursor-not-allowed'
                 : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-300 hover:border-purple-400'
             }`}>
-            <Compass size={15} className={antiGravityActive ? 'animate-spin' : 'text-purple-600'} />
+            <Compass
+              size={15}
+              className={antiGravityActive ? 'animate-spin' : 'text-purple-600'}
+            />
             <span className="font-extrabold text-[11px]">
               {antiGravityActive
-                ? `${antiGravityTimerRef.current.toFixed(0)}s`
+                ? `${antiGravityActiveSec}s`
                 : antiGravityCooldown > 0
                 ? `${antiGravityCooldown}s`
                 : 'Zero-G'}
@@ -1848,7 +2771,11 @@ export default function App() {
           {/* Magnet Powerup Button */}
           <button
             onClick={activateMagnet}
-            disabled={magnetCooldown > 0 || magnetActive || gameState.status !== 'PLAYING'}
+            disabled={
+              magnetCooldown > 0 ||
+              magnetActive ||
+              gameState.status !== 'PLAYING'
+            }
             title="Magnet Powerup (M / 2)"
             className={`h-9 px-2.5 rounded-xl border font-bold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-sm active:scale-95 ${
               magnetActive
@@ -1859,7 +2786,11 @@ export default function App() {
             }`}>
             <Zap size={15} className="text-amber-600" />
             <span className="font-extrabold text-[11px]">
-              {magnetActive ? 'Pull!' : magnetCooldown > 0 ? `${magnetCooldown}s` : 'Magnet'}
+              {magnetActive
+                ? 'Pull!'
+                : magnetCooldown > 0
+                ? `${magnetCooldown}s`
+                : 'Magnet'}
             </span>
           </button>
 
@@ -1881,43 +2812,47 @@ export default function App() {
         </div>
       </header>
 
-      {/* GAME CANVAS PLAYFIELD */}
-      {assetsReady && (
-        <div className="flex-1 w-full min-h-0 relative flex items-center justify-center pointer-events-auto touch-none select-none">
-          {/* First drop onboarding visual prompt */}
-          {gameState.status === 'PLAYING' && totalDrops === 0 && (
-            <div className="absolute top-2 z-10 pointer-events-none flex flex-col items-center animate-bounce px-4">
-              <div className="bg-[#8C5832]/95 text-white text-xs md:text-sm font-black px-4 py-2 rounded-full shadow-lg border-2 border-[#E8CAAA] flex items-center gap-2">
-                <span>👆 Drag to Aim &bull; Release or Tap to Drop!</span>
-                <span className="hidden sm:inline text-yellow-300 font-bold">(Space / &darr;)</span>
-              </div>
+      {/* GAME CANVAS PLAYFIELD (Always mounted so canvasRef exists on mount) */}
+      <div className="flex-1 w-full min-h-0 relative flex items-center justify-center pointer-events-auto touch-none select-none">
+        {/* First drop onboarding visual prompt */}
+        {assetsReady && gameState.status === 'PLAYING' && totalDrops === 0 && (
+          <div className="absolute top-2 z-10 pointer-events-none flex flex-col items-center animate-bounce px-4">
+            <div className="bg-[#8C5832]/95 text-white text-xs md:text-sm font-black px-4 py-2 rounded-full shadow-lg border-2 border-[#E8CAAA] flex items-center gap-2">
+              <span>👆 Drag to Aim &bull; Release or Tap to Drop!</span>
+              <span className="hidden sm:inline text-yellow-300 font-bold">
+                (Space / &darr;)
+              </span>
             </div>
-          )}
+          </div>
+        )}
 
-          {/* Anti-Gravity Onscreen tap hint */}
-          {antiGravityActive && (
-            <div className="absolute top-3 z-10 pointer-events-none flex flex-col items-center animate-pulse px-3">
-              <div className="bg-purple-900/90 text-purple-100 text-xs font-bold px-3 py-1.5 rounded-full shadow border border-purple-400 flex items-center gap-1.5">
-                <span>🌀 ZERO-G! Tap any floating fruit to push it toward its matching twin!</span>
-              </div>
+        {/* Anti-Gravity Onscreen tap hint */}
+        {assetsReady && antiGravityActive && (
+          <div className="absolute top-3 z-10 pointer-events-none flex flex-col items-center animate-pulse px-3">
+            <div className="bg-purple-900/90 text-purple-100 text-xs font-bold px-3 py-1.5 rounded-full shadow border border-purple-400 flex items-center gap-1.5">
+              <span>
+                🌀 ZERO-G! Tap any floating fruit to push it toward its matching
+                twin!
+              </span>
             </div>
-          )}
+          </div>
+        )}
 
-          <canvas
-            ref={canvasRef}
-            width={canvasWidth}
-            height={canvasHeight}
-            onPointerDown={handleCanvasPointerDown}
-            onPointerMove={handleCanvasPointerMove}
-            onPointerUp={handleCanvasPointerUp}
-            style={{
-              aspectRatio: `${canvasWidth} / ${canvasHeight}`,
-              width: `min(100%, calc(100vh * ${canvasWidth} / ${canvasHeight}))`,
-            }}
-            className="h-auto max-w-full max-h-full drop-shadow-xl cursor-pointer touch-none"
-          />
-        </div>
-      )}
+        <canvas
+          ref={canvasRef}
+          width={canvasWidth}
+          height={canvasHeight}
+          onPointerDown={handleCanvasPointerDown}
+          onPointerMove={handleCanvasPointerMove}
+          onPointerUp={handleCanvasPointerUp}
+          onPointerCancel={handleCanvasPointerCancel}
+          style={{
+            aspectRatio: `${canvasWidth} / ${canvasHeight}`,
+            width: `min(100%, calc(100vh * ${canvasWidth} / ${canvasHeight}))`,
+          }}
+          className="h-auto max-w-full max-h-full drop-shadow-xl cursor-pointer touch-none"
+        />
+      </div>
 
       {/* BOTTOM EVOLUTION LEGEND & CONTROLS */}
       <footer className="w-full bg-[#EAD8C0] border-t border-[#C89666] px-2 py-1 shrink-0 z-10 max-w-2xl mx-auto flex flex-col gap-1 pointer-events-auto">
@@ -1930,21 +2865,19 @@ export default function App() {
             {FRUIT_TIERS.map((tier, idx) => (
               <React.Fragment key={tier.name}>
                 <div
-                  className="w-5 h-5 rounded-full flex items-center justify-center border shadow-xs"
+                  className="w-5 h-5 rounded-full flex items-center justify-center bg-white border shadow-xs shrink-0"
                   style={{
-                    backgroundColor: tier.color,
-                    borderColor: '#FFFFFF',
+                    borderColor: tier.color,
                   }}
                   title={`${tier.tier}. ${tier.name} (+${tier.points} pts)`}>
-                  {tier.tier === 6 ? (
-                    <span className="text-[8px] font-black text-white">🥒</span>
-                  ) : tier.tier === 13 ? (
-                    <span className="text-[8px] font-black text-white">👑</span>
-                  ) : (
-                    <span className="text-[7px] font-black text-white drop-shadow-xs">
-                      {tier.tier}
-                    </span>
-                  )}
+                  <FruitBadgeIcon
+                    tier={tier}
+                    assetUrl={ASSETS_MANIFEST[tier.assetKey]}
+                    imageLoaded={Boolean(
+                      assetsReady && assets[tier.assetKey],
+                    )}
+                    size={16}
+                  />
                 </div>
                 {idx < FRUIT_TIERS.length - 1 && (
                   <span className="text-[9px] text-[#A67C52] font-bold">›</span>
@@ -1976,17 +2909,22 @@ export default function App() {
           <div className="w-full max-w-md bg-[#FFF9F0] border-4 border-[#8C5832] rounded-3xl p-5 m-3 shadow-2xl flex flex-col items-center pointer-events-auto">
             <div className="w-full flex items-center justify-between mb-2 border-b-2 border-[#E8CAAA] pb-2">
               <h2 className="text-xl font-extrabold text-[#5C3A21] flex items-center gap-2">
-                <Sparkles size={20} className="text-[#F59E0B]" /> 13-Tier Evolution Guide
+                <Sparkles size={20} className="text-[#F59E0B]" /> 13-Tier
+                Evolution Guide
               </h2>
               <button
-                onClick={() => setIsEvolutionTreeOpen(false)}
+                onClick={() => {
+                  setIsEvolutionTreeOpen(false);
+                  sessionPlayStartRef.current = performance.now();
+                }}
                 className="w-9 h-9 min-w-[36px] min-h-[36px] rounded-full bg-[#EAD8C0] hover:bg-[#D4A373] text-[#5C3A21] flex items-center justify-center cursor-pointer">
                 <X size={18} />
               </button>
             </div>
 
             <p className="text-xs text-[#7A502E] mb-3 text-center">
-              Merge matching fruits to evolve them into larger tiers and score massive points!
+              Merge matching fruits to evolve them into larger tiers and score
+              massive points!
             </p>
 
             <div className="w-full grid grid-cols-2 gap-2 overflow-y-auto max-h-[52vh] p-1 touch-auto">
@@ -2004,24 +2942,17 @@ export default function App() {
                     className="w-9 h-9 rounded-full flex items-center justify-center p-0.5 border shadow-inner shrink-0"
                     style={{
                       borderColor: tier.color,
-                      backgroundColor: tier.tier === 13 ? '#FEF3C7' : '#FFFFFF',
+                      backgroundColor:
+                        tier.tier === 13 ? '#FEF3C7' : '#FFFFFF',
                     }}>
-                    {tier.tier === 6 ? (
-                      <span className="text-xl">🥒</span>
-                    ) : tier.tier === 13 ? (
-                      <span className="text-xl">👑</span>
-                    ) : assetsReady && assets[tier.assetKey] ? (
-                      <img
-                        src={ASSETS_MANIFEST[tier.assetKey]}
-                        alt={tier.name}
-                        className="w-full h-full object-contain pointer-events-none"
-                      />
-                    ) : (
-                      <div
-                        className="w-6 h-6 rounded-full"
-                        style={{backgroundColor: tier.color}}
-                      />
-                    )}
+                    <FruitBadgeIcon
+                      tier={tier}
+                      assetUrl={ASSETS_MANIFEST[tier.assetKey]}
+                      imageLoaded={Boolean(
+                        assetsReady && assets[tier.assetKey],
+                      )}
+                      size={30}
+                    />
                   </div>
                   <div className="flex flex-col min-w-0">
                     <span className="text-xs font-bold text-[#4A2810] truncate">
@@ -2036,7 +2967,10 @@ export default function App() {
             </div>
 
             <button
-              onClick={() => setIsEvolutionTreeOpen(false)}
+              onClick={() => {
+                setIsEvolutionTreeOpen(false);
+                sessionPlayStartRef.current = performance.now();
+              }}
               className="mt-3 w-full bg-[#8C5832] hover:bg-[#724524] active:scale-98 text-white py-2.5 rounded-full font-bold text-sm shadow transition-all cursor-pointer">
               Got It!
             </button>
@@ -2053,7 +2987,10 @@ export default function App() {
                 <HelpCircle size={24} className="text-[#F59E0B]" /> How To Play
               </h2>
               <button
-                onClick={() => setIsHowToPlayOpen(false)}
+                onClick={() => {
+                  setIsHowToPlayOpen(false);
+                  sessionPlayStartRef.current = performance.now();
+                }}
                 className="w-10 h-10 min-w-[40px] min-h-[40px] rounded-full bg-[#EAD8C0] hover:bg-[#D4A373] text-[#5C3A21] flex items-center justify-center cursor-pointer">
                 <X size={20} />
               </button>
@@ -2062,36 +2999,46 @@ export default function App() {
             <div className="w-full space-y-3 text-xs md:text-sm text-[#5C3A21] mb-6 overflow-y-auto max-h-[50vh] touch-auto">
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  1. Aim and Drop 🍒
+                  1. Smart Aim &amp; Drop 🍒
                 </strong>
-                Move your mouse or drag your finger horizontally to position the
-                held fruit. Release or tap anywhere to drop it into the jar (or press Space / &darr;). Dropper spawns are restricted to Tiers 1-5.
+                Move your mouse or drag your finger horizontally to aim with the
+                live landing preview—watch for the green ✨ MERGE! halo! Release
+                or tap anywhere to drop (or press Space / &darr;). Dropper
+                spawns are Tiers 1-5.
               </div>
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  2. 13-Tier Evolution Chain 🥒 &bull; 🍉 &bull; 👑
+                  2. Combos &amp; 13-Tier Evolution 🥒 &bull; 🍉 &bull; 👑
                 </strong>
-                Merge matching fruits to evolve from Cherry all the way to Tier 6 Cucumber, Watermelon, and Tier 13 King Durian!
+                Chain rapid merges within the combo window for up to 3x bonus
+                points and shockwave blasts all the way to Tier 13 King Durian!
               </div>
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
                   3. 🌀 Zero-G Anti-Gravity Power-Up
                 </strong>
-                Inverts gravity for 5 seconds! A ceiling barrier prevents fruit escape, and danger-line game over is paused. Tap floating fruits during Zero-G to launch them toward their matching twin!
+                Inverts gravity for 5 seconds! A ceiling barrier prevents fruit
+                escape, and danger-line game over is paused. Tap floating fruits
+                during Zero-G to launch them toward their matching twin!
               </div>
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
                   4. 🧲 Magnet Power-Up
                 </strong>
-                Instantly tracks down the highest tier matching fruit pair in the jar and magnetically pulls them together with an electric tractor beam!
+                Instantly locks onto the closest pair of your highest-tier
+                matching fruits and pulls them together with an electric tractor
+                beam!
               </div>
             </div>
 
             <button
-              onClick={() => setIsHowToPlayOpen(false)}
+              onClick={() => {
+                setIsHowToPlayOpen(false);
+                sessionPlayStartRef.current = performance.now();
+              }}
               className="w-full bg-[#8C5832] hover:bg-[#724524] active:scale-98 text-white py-3 rounded-full font-bold text-base shadow transition-all cursor-pointer">
               Back to Game
             </button>
@@ -2110,7 +3057,10 @@ export default function App() {
             <div className="w-full space-y-3 mb-6">
               {/* Resume Button */}
               <button
-                onClick={() => setIsMenuOpen(false)}
+                onClick={() => {
+                  setIsMenuOpen(false);
+                  sessionPlayStartRef.current = performance.now();
+                }}
                 className="w-full bg-[#8C5832] hover:bg-[#724524] text-white py-3.5 rounded-2xl font-bold text-lg shadow-md flex items-center justify-center gap-2 transition-transform active:scale-98 cursor-pointer">
                 <Play size={20} /> Resume
               </button>
@@ -2118,10 +3068,7 @@ export default function App() {
               {/* Audio Controls */}
               <div className="grid grid-cols-2 gap-3">
                 <button
-                  onClick={() => {
-                    const muted = gameAudio.toggleMute();
-                    setSfxMuted(muted);
-                  }}
+                  onClick={() => setSfxMuted((prev) => !prev)}
                   className="py-3 px-4 rounded-2xl bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
                   {sfxMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
                   SFX: {sfxMuted ? 'Off' : 'On'}
@@ -2145,7 +3092,8 @@ export default function App() {
               <button
                 onClick={() => setIsEvolutionTreeOpen(true)}
                 className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
-                <Sparkles size={18} className="text-[#F59E0B]" /> Fruit Evolution Guide
+                <Sparkles size={18} className="text-[#F59E0B]" /> Fruit
+                Evolution Guide
               </button>
 
               {/* Restart current session */}
@@ -2181,7 +3129,8 @@ export default function App() {
               Juicy Drop
             </h1>
             <p className="text-xs md:text-sm text-[#8C5832] font-semibold text-center mb-6">
-              Drop & merge fruits inside the cozy wooden jar to create Cucumber, Watermelon, and the legendary King Durian!
+              Drop &amp; merge fruits inside the cozy wooden jar to create
+              Cucumber, Watermelon, and the legendary King Durian!
             </p>
 
             <div className="w-full space-y-3">
@@ -2219,6 +3168,7 @@ export default function App() {
             highScore,
             gameState.score,
           )}`}
+          stats={sessionStats}
           actionLabel="TRY AGAIN"
           onAction={initGame}
           icon={<RotateCw size={24} />}
@@ -2231,9 +3181,13 @@ export default function App() {
         <Overlay
           title="👑 KING DURIAN CROWNED! 🎉"
           description={`Supreme Fruit Master! Final Score: ${gameState.score}`}
-          actionLabel="PLAY AGAIN"
-          onAction={initGame}
-          icon={<RotateCw size={24} />}
+          stats={sessionStats}
+          actionLabel="KEEP PLAYING (ENDLESS)"
+          onAction={resumeEndlessMode}
+          icon={<Play size={22} />}
+          secondaryActionLabel="NEW GAME"
+          onSecondaryAction={initGame}
+          secondaryIcon={<RotateCw size={20} />}
           tone="victory"
         />
       )}

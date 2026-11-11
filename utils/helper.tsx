@@ -23,6 +23,10 @@ interface OverlayProps {
   actionLabel: string;
   onAction: () => void;
   icon?: React.ReactNode;
+  secondaryActionLabel?: string;
+  onSecondaryAction?: () => void;
+  secondaryIcon?: React.ReactNode;
+  stats?: Array<{label: string; value: string | number}>;
   tone?: OverlayTone;
   autoFocus?: boolean;
 }
@@ -65,6 +69,10 @@ export function Overlay({
   actionLabel,
   onAction,
   icon,
+  secondaryActionLabel,
+  onSecondaryAction,
+  secondaryIcon,
+  stats,
   tone = 'neutral',
   autoFocus = true,
 }: OverlayProps) {
@@ -72,26 +80,52 @@ export function Overlay({
 
   return (
     <div
-      className={`absolute inset-0 ${TONE_CLASS[tone]} overflow-y-auto touch-auto`}>
+      className={`absolute inset-0 z-50 ${TONE_CLASS[tone]} backdrop-blur-xs overflow-y-auto touch-auto pointer-events-auto`}>
       <div className="min-h-full flex flex-col items-center p-4">
         <div className="m-auto flex flex-col items-center w-full max-w-md">
-          <h1 className="text-3xl md:text-5xl font-black mb-4 text-yellow-400 text-center">
+          <h1 className="text-3xl md:text-5xl font-black mb-3 text-yellow-400 text-center drop-shadow-md">
             {title}
           </h1>
           {description && (
-            <p className="text-lg md:text-2xl mb-8 text-center">
+            <p className="text-lg md:text-2xl mb-5 text-white/95 font-bold text-center drop-shadow-xs">
               {description}
             </p>
           )}
-          <button
-            ref={buttonRef}
-            autoFocus={autoFocus}
-            onClick={onAction}
-            data-testid="start-button"
-            className={`bg-white text-black px-6 md:px-8 py-2 md:py-3 rounded-full font-bold text-lg md:text-xl transition-colors flex items-center gap-2 ${BUTTON_CLASS[tone]}`}>
-            {icon}
-            {actionLabel}
-          </button>
+          {stats && stats.length > 0 && (
+            <div className="grid grid-cols-3 gap-2.5 w-full max-w-sm mb-7">
+              {stats.map((stat) => (
+                <div
+                  key={stat.label}
+                  className="bg-black/35 border border-white/20 rounded-2xl px-3 py-2.5 flex flex-col items-center text-center">
+                  <span className="text-[10px] uppercase tracking-wider font-extrabold text-white/70">
+                    {stat.label}
+                  </span>
+                  <span className="text-base md:text-lg font-black text-white mt-0.5 truncate max-w-full">
+                    {stat.value}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+          <div className="flex flex-col sm:flex-row items-center justify-center gap-3 w-full max-w-sm">
+            <button
+              ref={buttonRef}
+              autoFocus={autoFocus}
+              onClick={onAction}
+              data-testid="start-button"
+              className={`w-full sm:w-auto bg-white text-black px-6 md:px-8 py-3 rounded-full font-extrabold text-base md:text-lg shadow-lg transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-2 ${BUTTON_CLASS[tone]}`}>
+              {icon}
+              {actionLabel}
+            </button>
+            {secondaryActionLabel && onSecondaryAction && (
+              <button
+                onClick={onSecondaryAction}
+                className="w-full sm:w-auto bg-white/15 hover:bg-white/25 text-white border-2 border-white/40 px-6 py-3 rounded-full font-bold text-base md:text-lg shadow transition-all active:scale-95 cursor-pointer flex items-center justify-center gap-2">
+                {secondaryIcon}
+                {secondaryActionLabel}
+              </button>
+            )}
+          </div>
         </div>
       </div>
     </div>
@@ -221,9 +255,10 @@ const getPointerPosition = (
  * @returns A mutable ref containing the current input snapshot.
  */
 export const useInput = (
-  canvasRef: RefObject<HTMLCanvasElement>,
+  canvasRef: RefObject<HTMLCanvasElement | null>,
   enabled = true,
   logicalSize?: LogicalSize,
+  readyKey?: unknown,
 ): MutableRefObject<InputSnapshot> => {
   const inputRef = useRef<InputSnapshot>({
     actions: createEmptyActions(),
@@ -259,13 +294,14 @@ export const useInput = (
     const canvas = canvasRef.current;
 
     const handlePointerDown = (event: PointerEvent) => {
-      if (!canvas) return;
+      const activeCanvas = canvasRef.current;
+      if (!activeCanvas) return;
       try {
-        if (typeof canvas.setPointerCapture === 'function') {
-          canvas.setPointerCapture(event.pointerId);
+        if (typeof activeCanvas.setPointerCapture === 'function') {
+          activeCanvas.setPointerCapture(event.pointerId);
         }
       } catch {}
-      const pos = getPointerPosition(event.clientX, event.clientY, canvas, logicalSize);
+      const pos = getPointerPosition(event.clientX, event.clientY, activeCanvas, logicalSize);
       inputRef.current.pointer = {
         ...pos,
         down: true,
@@ -274,8 +310,9 @@ export const useInput = (
     };
 
     const handlePointerMove = (event: PointerEvent) => {
-      if (!canvas) return;
-      const pos = getPointerPosition(event.clientX, event.clientY, canvas, logicalSize);
+      const activeCanvas = canvasRef.current;
+      if (!activeCanvas) return;
+      const pos = getPointerPosition(event.clientX, event.clientY, activeCanvas, logicalSize);
       inputRef.current.pointer = {
         ...pos,
         down: inputRef.current.pointer.down,
@@ -283,16 +320,24 @@ export const useInput = (
     };
 
     const handlePointerUp = (event: PointerEvent) => {
-      if (!canvas) return;
+      const activeCanvas = canvasRef.current;
+      if (!activeCanvas) {
+        inputRef.current.pointer.down = false;
+        inputRef.current.actions.tap = false;
+        return;
+      }
+      if (!inputRef.current.pointer.down && event.target !== activeCanvas) {
+        return;
+      }
       try {
         if (
-          typeof canvas.releasePointerCapture === 'function' &&
-          canvas.hasPointerCapture(event.pointerId)
+          typeof activeCanvas.releasePointerCapture === 'function' &&
+          activeCanvas.hasPointerCapture(event.pointerId)
         ) {
-          canvas.releasePointerCapture(event.pointerId);
+          activeCanvas.releasePointerCapture(event.pointerId);
         }
       } catch {}
-      const pos = getPointerPosition(event.clientX, event.clientY, canvas, logicalSize);
+      const pos = getPointerPosition(event.clientX, event.clientY, activeCanvas, logicalSize);
       inputRef.current.pointer = {
         ...pos,
         down: false,
@@ -301,9 +346,10 @@ export const useInput = (
     };
 
     const handleTouchStart = (event: TouchEvent) => {
-      if (!canvas || event.touches.length === 0) return;
+      const activeCanvas = canvasRef.current;
+      if (!activeCanvas || event.touches.length === 0) return;
       const touch = event.touches[0];
-      const pos = getPointerPosition(touch.clientX, touch.clientY, canvas, logicalSize);
+      const pos = getPointerPosition(touch.clientX, touch.clientY, activeCanvas, logicalSize);
       inputRef.current.pointer = {
         ...pos,
         down: true,
@@ -312,9 +358,10 @@ export const useInput = (
     };
 
     const handleTouchMove = (event: TouchEvent) => {
-      if (!canvas || event.touches.length === 0) return;
+      const activeCanvas = canvasRef.current;
+      if (!activeCanvas || event.touches.length === 0) return;
       const touch = event.touches[0];
-      const pos = getPointerPosition(touch.clientX, touch.clientY, canvas, logicalSize);
+      const pos = getPointerPosition(touch.clientX, touch.clientY, activeCanvas, logicalSize);
       inputRef.current.pointer = {
         ...pos,
         down: true,
@@ -322,10 +369,15 @@ export const useInput = (
     };
 
     const handleTouchEnd = (event: TouchEvent) => {
-      if (!canvas) return;
+      const activeCanvas = canvasRef.current;
+      if (!activeCanvas) {
+        inputRef.current.pointer.down = false;
+        inputRef.current.actions.tap = false;
+        return;
+      }
       const touch = event.changedTouches[0];
       if (touch) {
-        const pos = getPointerPosition(touch.clientX, touch.clientY, canvas, logicalSize);
+        const pos = getPointerPosition(touch.clientX, touch.clientY, activeCanvas, logicalSize);
         inputRef.current.pointer = {
           ...pos,
           down: false,
@@ -387,7 +439,7 @@ export const useInput = (
         canvas.removeEventListener('touchcancel', handleTouchEnd);
       }
     };
-  }, [canvasRef, enabled]);
+  }, [canvasRef, enabled, readyKey]);
 
   return inputRef;
 };
@@ -429,8 +481,10 @@ class GameAudio {
     if (typeof window !== 'undefined') {
       this.attachUnlock();
       window.addEventListener('playground-mute', (e: Event) => {
-        const customEvent = e as CustomEvent<{muted: boolean}>;
-        this.setMuted(customEvent.detail.muted);
+        const customEvent = e as CustomEvent<{muted?: boolean}>;
+        if (typeof customEvent.detail?.muted === 'boolean') {
+          this.setMuted(customEvent.detail.muted);
+        }
       });
     }
   }
@@ -502,8 +556,9 @@ class GameAudio {
 
   /** Set master volume (0..1). Affects SFX. */
   setVolume(v: number) {
+    if (!Number.isFinite(v)) return;
     this.volume = Math.max(0, Math.min(1, v));
-    if (this.master && this.ctx && !this.muted) {
+    if (this.master && this.ctx) {
       this.master.gain.setValueAtTime(this.volume, this.ctx.currentTime);
     }
   }
@@ -768,6 +823,52 @@ class GameAudio {
     const v = this.vary();
     this.blip(b, b.now, { type: 'sine', freq: 140 * v, freqTo: 35 * v, dur: 0.16, gain: 0.15 });
     this.noiseBurst(b, b.now, { dur: 0.12, gain: 0.08, from: 300, to: 60 });
+  }
+
+  playComboChime(combo: number) {
+    if (!Number.isFinite(combo)) return;
+    const b = this.begin();
+    if (!b) return;
+    const semitones = Math.min(14, Math.max(0, combo - 1));
+    const pitchMult = Math.pow(2, semitones / 12) * this.vary(0.015);
+    const baseFreq = 587.33; // D5
+    this.blip(b, b.now, {
+      type: 'triangle',
+      freq: baseFreq * pitchMult,
+      dur: 0.12,
+      gain: 0.085,
+    });
+    this.blip(b, b.now + 0.055, {
+      type: 'sine',
+      freq: baseFreq * 1.25 * pitchMult,
+      dur: 0.18,
+      gain: 0.095,
+    });
+    if (combo >= 4) {
+      this.blip(b, b.now + 0.11, {
+        type: 'sine',
+        freq: baseFreq * 1.5 * pitchMult,
+        dur: 0.22,
+        gain: 0.075,
+      });
+    }
+  }
+
+  playSoftBounce(intensity: number, tier: number) {
+    if (!Number.isFinite(intensity) || !Number.isFinite(tier)) return;
+    const b = this.begin();
+    if (!b) return;
+    const clampedIntensity = Math.max(0.15, Math.min(1, intensity));
+    const tierFactor = Math.max(0.42, 1.15 - tier * 0.055);
+    const startFreq = 210 * tierFactor * this.vary(0.06);
+    const endFreq = 65 * tierFactor;
+    this.blip(b, b.now, {
+      type: 'sine',
+      freq: startFreq,
+      freqTo: endFreq,
+      dur: 0.065 + tier * 0.004,
+      gain: 0.045 * clampedIntensity,
+    });
   }
 }
 

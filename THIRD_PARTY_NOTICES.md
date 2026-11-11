@@ -8,42 +8,25 @@ and are distributed subject to the license terms reproduced below.
 
 ## Summary of Components
 
-| Package                     | Version | License | Copyright                  |
-| --------------------------- | ------- | ------- | -------------------------- |
-| @react-three/fiber          | 9.6.1   | MIT     | Copyright (c) 2018-2024    |
-:                             :         :         : Paul Henschel, et al.      :
-| @react-three/postprocessing | 3.0.2   | MIT     | Copyright (c) 2015 Raoul   |
-:                             :         :         : van Rüschen                :
-| @react-three/rapier         | 2.2.0   | MIT     | Copyright (c) 2022         |
-:                             :         :         : Poimandres                 :
-| framer-motion               | 12.42.0 | MIT     | Copyright (c) 2018 Framer  |
-:                             :         :         : B.V.                       :
-| lucide-react                | 1.21.0  | ISC     | Copyright (c) 2024 Lucide  |
-:                             :         :         : Icons and Contributors     :
-| phaser                      | 4.2.0   | MIT     | Copyright (c) 2024 Richard |
-:                             :         :         : Davey, Photon Storm Ltd.   :
-| react                       | 19.2.7  | MIT     | Copyright (c) Meta         |
-:                             :         :         : Platforms, Inc. and        :
-:                             :         :         : affiliates.                :
-| three                       | 0.185.0 | MIT     | Copyright (c) 2010-2024    |
-:                             :         :         : three.js authors           :
+| Package | Version | License | Copyright |
+| :--- | :--- | :--- | :--- |
+| `lucide-react` | `^1.16.0` | ISC + MIT (Feather) | Copyright (c) 2024 Lucide Icons and Contributors; Feather icons Copyright (c) 2013-present Cole Bemis |
+| `matter-js` | `^0.20.0` | MIT | Copyright (c) Liam Brummitt and contributors |
+| `react` | `^19.0.0` | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
+| `react-dom` | `^19.0.0` | MIT | Copyright (c) Meta Platforms, Inc. and affiliates. |
 
 --------------------------------------------------------------------------------
 
 ## MIT License
 
-The following components are licensed under the MIT License. Each retains the
-copyright notice shown next to it; the shared license text follows below.
+The following runtime components are licensed under the MIT License. Each retains
+the copyright notice shown next to it; the shared license text follows below.
 
--   **@react-three/fiber** — Copyright (c) 2018-2024 Paul Henschel, et al.
--   **@react-three/postprocessing** — Copyright (c) 2015 Raoul van Rüschen
--   **@react-three/rapier** — Copyright (c) 2022 Poimandres
--   **framer-motion** — Copyright (c) 2018 Framer B.V.
--   **phaser** — Copyright (c) 2024 Richard Davey, Photon Storm Ltd.
--   **react** — Copyright (c) Meta Platforms, Inc. and affiliates.
--   **three** — Copyright (c) 2010-2024 three.js authors
+- **`matter-js`** — Copyright (c) Liam Brummitt and contributors
+- **`react`** — Copyright (c) Meta Platforms, Inc. and affiliates.
+- **`react-dom`** — Copyright (c) Meta Platforms, Inc. and affiliates.
 
-```
+```text
 MIT License
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -67,12 +50,12 @@ SOFTWARE.
 
 --------------------------------------------------------------------------------
 
-## ISC License — lucide-react
+## ISC License & Feather MIT Grant — `lucide-react`
 
 `lucide-react` is licensed under the ISC License. Its license file also includes
 a secondary MIT grant covering the icons derived from the Feather project.
 
-```
+```text
 ISC License
 
 Copyright (c) 2024 Lucide Icons and Contributors
@@ -118,5 +101,5 @@ SOFTWARE.
 
 --------------------------------------------------------------------------------
 
-_This file lists third-party components only. The license governing your
-application itself is provided separately in `LICENSE` / `LICENSE.md`.
+_This file lists third-party runtime components only. The license governing the
+application itself is provided separately in `LICENSE` / `LICENSE.md`._
