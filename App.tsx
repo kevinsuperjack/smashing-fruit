@@ -193,6 +193,19 @@ interface ActiveMagnet {
   totalSeconds: number;
 }
 
+// Cozy Café Smoothie Order recipe models
+interface SmoothieIngredientSlot {
+  tier: number;
+  completed: boolean;
+  justCompletedAt: number;
+}
+
+interface SmoothieOrder {
+  id: number;
+  slots: SmoothieIngredientSlot[];
+  accentColor: string;
+}
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stepperRef = useRef<ReturnType<typeof createFixedStepper> | null>(null);
@@ -269,6 +282,9 @@ export default function App() {
   const [totalMerges, setTotalMerges] = useState(0);
   const [highestTier, setHighestTier] = useState(1);
   const [musicTensionTier, setMusicTensionTier] = useState<0 | 1 | 2>(0);
+  const [ordersCompleted, setOrdersCompleted] = useState(0);
+  const [feversTriggered, setFeversTriggered] = useState(0);
+  const [isFeverActive, setIsFeverActive] = useState(false);
 
   // Merge-Charged Power-up States (0..100%, start ready at 100%)
   const [antiGravityCharge, setAntiGravityCharge] = useState<number>(100);
@@ -433,6 +449,78 @@ export default function App() {
   const lastDisplayedAgActiveSecRef = useRef<number>(0);
   const lastDisplayedMagChargeRef = useRef<number>(100);
 
+  // Smoothie Orders & Juice Fever Refs (isolated orderRngRef preserves Daily Harvest drop sequence!)
+  const orderRngRef = useRef<() => number>(Math.random);
+  const currentOrderRef = useRef<SmoothieOrder | null>(null);
+  const orderSeqIdRef = useRef<number>(0);
+  const blenderCountRef = useRef<number>(0);
+  const blenderColorsRef = useRef<string[]>([]);
+  const ordersCompletedRef = useRef<number>(0);
+  const feversTriggeredRef = useRef<number>(0);
+  const feverTimerRef = useRef<number>(0);
+  const orderSpawnTimeRef = useRef<number>(0);
+
+  // Progressive pure-visual Smoothie Order recipe generator
+  const generateNextSmoothieOrder = useCallback((): SmoothieOrder => {
+    const completed = ordersCompletedRef.current;
+    const rng = orderRngRef.current;
+    const slotCount =
+      completed < 2 ? 2 : completed < 5 ? (rng() < 0.45 ? 2 : 3) : 3;
+
+    const maxTargetTier =
+      completed < 2
+        ? 4 // Strawberry, Grape, Dekopon
+        : completed < 5
+        ? Math.min(6, Math.max(4, highestTierRef.current + 1))
+        : Math.min(8, Math.max(5, highestTierRef.current + 1));
+
+    // Weighted toward approachable tiers so tickets stay breezy and relaxing
+    const candidateTiers: Array<{tier: number; weight: number}> = [];
+    for (let t = 2; t <= maxTargetTier; t++) {
+      const weight = Math.max(8, 34 - (t - 2) * 5);
+      candidateTiers.push({tier: t, weight});
+    }
+
+    const pickWeightedTier = (excludeTier?: number): number => {
+      const pool =
+        excludeTier !== undefined && candidateTiers.length > 1
+          ? candidateTiers.filter((c) => c.tier !== excludeTier)
+          : candidateTiers;
+      const total = pool.reduce((sum, c) => sum + c.weight, 0);
+      let r = rng() * total;
+      for (let i = 0; i < pool.length; i++) {
+        if (r < pool[i].weight) return pool[i].tier;
+        r -= pool[i].weight;
+      }
+      return pool[0].tier;
+    };
+
+    const slots: SmoothieIngredientSlot[] = [];
+    for (let s = 0; s < slotCount; s++) {
+      // Keep early 2-slot recipes visually distinct (e.g. Strawberry + Grape)
+      const exclude =
+        completed < 3 && slots.length === 1 ? slots[0].tier : undefined;
+      slots.push({
+        tier: pickWeightedTier(exclude),
+        completed: false,
+        justCompletedAt: 0,
+      });
+    }
+
+    // Sort ascending by tier so recipes read naturally left-to-right
+    slots.sort((a, b) => a.tier - b.tier);
+    const highestSlotTier = slots[slots.length - 1]?.tier || 2;
+    const accentColor = FRUIT_TIERS[highestSlotTier - 1]?.color || '#EC4899';
+
+    orderSeqIdRef.current += 1;
+    orderSpawnTimeRef.current = performance.now();
+    return {
+      id: orderSeqIdRef.current,
+      slots,
+      accentColor,
+    };
+  }, []);
+
   // Helper to add merge/catalyst charge to Zero-G & Magnet meters
   const addPowerupCharge = useCallback((agDelta: number, magDelta: number) => {
     let playedReady = false;
@@ -499,11 +587,21 @@ export default function App() {
       .slice(0, maxTier)
       .reduce((a, b) => a + b, 0);
     let rand = rngRef.current() * totalWeight;
+    let chosenTier = 1;
     for (let i = 0; i < maxTier; i++) {
-      if (rand < weights[i]) return {tier: i + 1, special: 'none'};
+      if (rand < weights[i]) {
+        chosenTier = i + 1;
+        break;
+      }
       rand -= weights[i];
     }
-    return {tier: 1, special: 'none'};
+
+    // During Juice Fever, upgrade normal drops by +1 tier (no tiny Cherries!) without extra RNG draws
+    if (feverTimerRef.current > 0) {
+      chosenTier = Math.min(maxTier, chosenTier + 1);
+    }
+
+    return {tier: chosenTier, special: 'none'};
   }, []);
 
   // Spawn Juice Particles
@@ -768,7 +866,10 @@ export default function App() {
     }
 
     const now = performance.now();
-    const cooldown = (getConfig('dropCooldownMs') as number) || 450;
+    const cooldown =
+      feverTimerRef.current > 0
+        ? (getConfig('feverDropCooldownMs') as number) || 280
+        : (getConfig('dropCooldownMs') as number) || 450;
     if (now - lastDropTimeRef.current < cooldown) return;
     if (!engineRef.current) return;
 
@@ -926,6 +1027,10 @@ export default function App() {
       rngRef.current =
         activeMode === 'DAILY'
           ? createSeededRng(`juicydrop-daily-${dailyInfo.seedKey}`)
+          : Math.random;
+      orderRngRef.current =
+        activeMode === 'DAILY'
+          ? createSeededRng(`juicydrop-orders-${dailyInfo.seedKey}`)
           : Math.random;
 
       // Clear existing physics
@@ -1152,6 +1257,13 @@ export default function App() {
       isPointerDownRef.current = false;
       heldItemRef.current = null;
       canSwapHoldRef.current = true;
+      orderSeqIdRef.current = 0;
+      blenderCountRef.current = 0;
+      blenderColorsRef.current = [];
+      ordersCompletedRef.current = 0;
+      feversTriggeredRef.current = 0;
+      feverTimerRef.current = 0;
+      currentOrderRef.current = generateNextSmoothieOrder();
       sessionPlayStartRef.current = startNow;
       lastDropTimeRef.current = startNow - 600;
 
@@ -1161,6 +1273,9 @@ export default function App() {
       setTotalMerges(0);
       setHighestTier(1);
       setMusicTensionTier(0);
+      setOrdersCompleted(0);
+      setFeversTriggered(0);
+      setIsFeverActive(false);
       setAntiGravityActive(false);
       setAntiGravityActiveSec(0);
       setAntiGravityCharge(100);
@@ -1199,6 +1314,7 @@ export default function App() {
       canvasWidth,
       dailyInfo.seedKey,
       drawNextDropItem,
+      generateNextSmoothieOrder,
       jarBottom,
       jarRight,
       jarWidth,
@@ -1412,6 +1528,49 @@ export default function App() {
       }
     }
 
+    // 0.5 Juice Fever Countdown & Celebratory Rainbow Sparkles
+    if (feverTimerRef.current > 0) {
+      if (Math.random() < 0.35) {
+        const feverPalette = [
+          '#F43F5E',
+          '#F59E0B',
+          '#10B981',
+          '#06B6D4',
+          '#EC4899',
+          '#A855F7',
+        ];
+        particlesRef.current.push({
+          x: jarX + 22 + Math.random() * (jarWidth - 44),
+          y: jarBottom - 20 - Math.random() * (jarBottom - jarTop - 40),
+          vx: (Math.random() - 0.5) * 1.6,
+          vy: -1.4 - Math.random() * 2.2,
+          radius: 3 + Math.random() * 4,
+          color: feverPalette[Math.floor(Math.random() * feverPalette.length)],
+          alpha: 0.95,
+          life: 0,
+          maxLife: 0.75 + Math.random() * 0.45,
+          isSparkle: true,
+        });
+      }
+
+      feverTimerRef.current = Math.max(0, feverTimerRef.current - deltaTime);
+      if (feverTimerRef.current <= 0) {
+        blenderCountRef.current = 0;
+        blenderColorsRef.current = [];
+        currentOrderRef.current = generateNextSmoothieOrder();
+        setIsFeverActive(false);
+        gameAudio.playFeverEnd();
+        spawnScorePopup(
+          canvasWidth / 2,
+          jarTop + 28,
+          '🍹 NEW SMOOTHIE ORDER!',
+          '#F59E0B',
+          22,
+          0.6,
+        );
+      }
+    }
+
     // Anti-Gravity Physics Phase & Gravity Adjustment
     if (antiGravityTimerRef.current > 0) {
       antiGravityTimerRef.current = Math.max(
@@ -1609,7 +1768,15 @@ export default function App() {
       });
       smallCandidates.sort((a, b) => a.dist - b.dist);
       const popped = smallCandidates.slice(0, 3);
-      let bonusPts = Math.round(60 * comboMult);
+      const activeFeverMult =
+        feverTimerRef.current > 0
+          ? (getConfig('feverScoreMultiplier') as number) || 2.0
+          : 1.0;
+      const activeFeverCharge =
+        feverTimerRef.current > 0
+          ? (getConfig('feverChargeMultiplier') as number) || 1.5
+          : 1.0;
+      let bonusPts = Math.round(60 * comboMult * activeFeverMult);
 
       popped.forEach(({fruit: target}) => {
         target.merged = true;
@@ -1619,7 +1786,7 @@ export default function App() {
         Matter.Composite.remove(world, target.body);
         fruitsRef.current.delete(target.body.id);
         spawnJuiceSplash(tx, ty, tConf.color, 14, true);
-        bonusPts += Math.round(tConf.points * 2 * comboMult);
+        bonusPts += Math.round(tConf.points * 2 * comboMult * activeFeverMult);
       });
 
       // Fizzy buoyant nudge on nearby remaining fruits
@@ -1640,7 +1807,7 @@ export default function App() {
         }
       });
 
-      addPowerupCharge(20, 20);
+      addPowerupCharge(20 * activeFeverCharge, 20 * activeFeverCharge);
       spawnScorePopup(
         cx,
         cy,
@@ -1712,7 +1879,15 @@ export default function App() {
             3.0,
             1 + Math.max(0, comboCountRef.current - 1) * 0.25,
           );
-          const prismaticBonus = Math.round(250 * comboMult);
+          const feverScoreMult =
+            feverTimerRef.current > 0
+              ? (getConfig('feverScoreMultiplier') as number) || 2.0
+              : 1.0;
+          const feverChargeMult =
+            feverTimerRef.current > 0
+              ? (getConfig('feverChargeMultiplier') as number) || 1.5
+              : 1.0;
+          const prismaticBonus = Math.round(250 * comboMult * feverScoreMult);
           gameAudio.playWildcardShimmer();
           spawnShockwave(midX, midY, 150, '#EC4899', 5);
           spawnJuiceSplash(midX, midY, '#F472B6', 28, true);
@@ -1726,7 +1901,7 @@ export default function App() {
             y: -0.002 * fruitB.body.mass,
           });
 
-          addPowerupCharge(16, 20);
+          addPowerupCharge(16 * feverChargeMult, 20 * feverChargeMult);
           spawnScorePopup(
             midX,
             midY,
@@ -1804,9 +1979,12 @@ export default function App() {
           setHighestTier(achievedTier);
         }
 
-        // Pure Merge Charge gain for Zero-G & Magnet
+        // Pure Merge Charge gain for Zero-G & Magnet (boosted on 3x+ combos and during Juice Fever!)
         const chargeBoost =
-          comboCountRef.current >= 3 ? comboChargeMult : 1.0;
+          (comboCountRef.current >= 3 ? comboChargeMult : 1.0) *
+          (feverTimerRef.current > 0
+            ? (getConfig('feverChargeMultiplier') as number) || 1.5
+            : 1.0);
         addPowerupCharge(
           (agBase + currentTierNum * 2) * chargeBoost,
           (magBase + currentTierNum * 2) * chargeBoost,
@@ -1819,7 +1997,119 @@ export default function App() {
           ? currentTierConfig.points
           : 2;
         const comboMult = Math.min(3.0, 1 + (comboCountRef.current - 1) * 0.25);
-        const earnedPoints = Math.round(basePts * comboMult);
+        const feverMult =
+          feverTimerRef.current > 0
+            ? (getConfig('feverScoreMultiplier') as number) || 2.0
+            : 1.0;
+        const earnedPoints = Math.round(basePts * comboMult * feverMult);
+
+        // Smoothie Order Checklist Progression (active when not in Juice Fever)
+        if (feverTimerRef.current <= 0 && currentOrderRef.current) {
+          const activeOrder = currentOrderRef.current;
+          const matchingSlot = activeOrder.slots.find(
+            (s) => !s.completed && s.tier === achievedTier,
+          );
+          if (matchingSlot) {
+            matchingSlot.completed = true;
+            matchingSlot.justCompletedAt = now;
+            const slotColor =
+              FRUIT_TIERS[achievedTier - 1]?.color || '#10B981';
+            spawnJuiceSplash(canvasWidth / 2 - 40, 44, slotColor, 14, true);
+
+            const allChecked = activeOrder.slots.every((s) => s.completed);
+            if (allChecked) {
+              const orderBonus =
+                (getConfig('smoothieOrderBonusPoints') as number) || 150;
+              ordersCompletedRef.current += 1;
+              setOrdersCompleted(ordersCompletedRef.current);
+              blenderColorsRef.current = [
+                ...blenderColorsRef.current,
+                activeOrder.accentColor,
+              ];
+              blenderCountRef.current += 1;
+              updateScoreWithHighScore(orderBonus);
+
+              const reqOrders = Math.max(
+                1,
+                (getConfig('ordersPerFever') as number) || 3,
+              );
+
+              if (blenderCountRef.current >= reqOrders) {
+                // 3/3 BLENDER FULL -> UNLEASH 12s JUICE FEVER!
+                const feverDur =
+                  (getConfig('feverDurationSeconds') as number) || 12.0;
+                feverTimerRef.current = feverDur;
+                feversTriggeredRef.current += 1;
+                setFeversTriggered(feversTriggeredRef.current);
+                setIsFeverActive(true);
+                currentOrderRef.current = null;
+
+                // Instantly upgrade normal dropper & next items by +1 tier (no tiny Cherries!)
+                const maxSpawn = Math.min(
+                  5,
+                  (getConfig('maxSpawnTier') as number) || 5,
+                );
+                if (
+                  currentItemRef.current.special === 'none' &&
+                  currentItemRef.current.tier < maxSpawn
+                ) {
+                  const upCur: DropItem = {
+                    tier: Math.min(maxSpawn, currentItemRef.current.tier + 1),
+                    special: 'none',
+                  };
+                  currentItemRef.current = upCur;
+                  setCurrentItem(upCur);
+                  spawnJuiceSplash(
+                    dropperXRef.current,
+                    dropperY,
+                    '#F59E0B',
+                    20,
+                    true,
+                  );
+                }
+                if (
+                  nextItemRef.current.special === 'none' &&
+                  nextItemRef.current.tier < maxSpawn
+                ) {
+                  const upNext: DropItem = {
+                    tier: Math.min(maxSpawn, nextItemRef.current.tier + 1),
+                    special: 'none',
+                  };
+                  nextItemRef.current = upNext;
+                  setNextItem(upNext);
+                }
+
+                gameAudio.playFeverStart();
+                screenShakeRef.current = Math.max(screenShakeRef.current, 7.5);
+                spawnShockwave(canvasWidth / 2, 46, 260, '#EC4899', 7);
+                spawnShockwave(canvasWidth / 2, jarTop + 40, 220, '#F59E0B', 5);
+                spawnJuiceSplash(canvasWidth / 2, 54, '#F472B6', 34, true);
+                spawnScorePopup(
+                  canvasWidth / 2,
+                  jarTop + 18,
+                  `🍹 JUICE FEVER! 2.0x PTS! (+${orderBonus})`,
+                  '#EC4899',
+                  27,
+                  0.75,
+                );
+              } else {
+                gameAudio.playOrderComplete();
+                spawnShockwave(canvasWidth / 2 + 120, 44, 110, '#10B981', 4);
+                spawnScorePopup(
+                  canvasWidth / 2,
+                  jarTop + 16,
+                  `🍹 SMOOTHIE READY! +${orderBonus} (${blenderCountRef.current}/${reqOrders})`,
+                  '#10B981',
+                  24,
+                  0.65,
+                );
+                currentOrderRef.current = generateNextSmoothieOrder();
+              }
+            } else {
+              gameAudio.playOrderCheck();
+            }
+          }
+        }
 
         // Audio juice
         if (kind === 'rainbow') {
@@ -2216,6 +2506,10 @@ export default function App() {
             fruit.expression = 'sweating';
             fruit.expressionTimer = 0.25;
           }
+        } else if (feverTimerRef.current > 0 && fruit.expressionTimer <= 0.1) {
+          fruit.expression =
+            fruit.special === 'none' && fruit.tier === 13 ? 'regal' : 'bouncy';
+          fruit.expressionTimer = 0.25;
         }
       }
     });
@@ -2843,7 +3137,51 @@ export default function App() {
       ctx.stroke();
     }
 
-    // Wooden Jar Rim and Outer Trim
+    // Juice Fever Prismatic Jar Interior Shimmer & Rainbow Rim Glow
+    if (feverTimerRef.current > 0) {
+      const feverHueShift = (performance.now() * 0.14) % 360;
+      const feverFill = ctx.createLinearGradient(jarX, jarTop, jarRight, jarBottom);
+      feverFill.addColorStop(0, `hsla(${feverHueShift}, 95%, 65%, 0.14)`);
+      feverFill.addColorStop(
+        0.5,
+        `hsla(${(feverHueShift + 120) % 360}, 95%, 65%, 0.1)`,
+      );
+      feverFill.addColorStop(
+        1,
+        `hsla(${(feverHueShift + 240) % 360}, 95%, 65%, 0.15)`,
+      );
+      ctx.fillStyle = feverFill;
+      ctx.beginPath();
+      ctx.roundRect(jarX, jarTop, jarWidth, jarBottom - jarTop, [0, 0, 36, 36]);
+      ctx.fill();
+    }
+
+    // Wooden Jar Rim and Outer Trim (with Neon Rainbow Halo during Juice Fever!)
+    ctx.save();
+    if (feverTimerRef.current > 0) {
+      const hue = (performance.now() * 0.18) % 360;
+      const rimGrad = ctx.createLinearGradient(jarX, jarTop, jarRight, jarBottom);
+      rimGrad.addColorStop(0, `hsl(${hue}, 95%, 60%)`);
+      rimGrad.addColorStop(0.35, `hsl(${(hue + 90) % 360}, 95%, 58%)`);
+      rimGrad.addColorStop(0.7, `hsl(${(hue + 190) % 360}, 95%, 58%)`);
+      rimGrad.addColorStop(1, `hsl(${(hue + 290) % 360}, 95%, 60%)`);
+      ctx.strokeStyle = rimGrad;
+      ctx.shadowColor = `hsl(${hue}, 95%, 60%)`;
+      ctx.shadowBlur = 18;
+      ctx.lineWidth = 18;
+      ctx.beginPath();
+      ctx.moveTo(jarX - 10, jarTop);
+      ctx.lineTo(jarX, jarTop);
+      ctx.lineTo(jarX, jarBottom - 10);
+      ctx.arcTo(jarX, jarBottom, jarX + 36, jarBottom, 36);
+      ctx.lineTo(jarRight - 36, jarBottom);
+      ctx.arcTo(jarRight, jarBottom, jarRight, jarBottom - 36, 36);
+      ctx.lineTo(jarRight, jarTop);
+      ctx.lineTo(jarRight + 10, jarTop);
+      ctx.stroke();
+    }
+    ctx.restore();
+
     ctx.strokeStyle = THEME.woodDark;
     ctx.lineWidth = 14;
     ctx.beginPath();
@@ -3090,7 +3428,10 @@ export default function App() {
       const activeTierConfig = activeItemMeta.tierConfig;
       const radius = activeRadius;
       const timeSinceDrop = performance.now() - lastDropTimeRef.current;
-      const cooldown = (getConfig('dropCooldownMs') as number) || 450;
+      const cooldown =
+        feverTimerRef.current > 0
+          ? (getConfig('feverDropCooldownMs') as number) || 280
+          : (getConfig('dropCooldownMs') as number) || 450;
       const readyProgress = Math.min(1, timeSinceDrop / cooldown);
       const isReady = readyProgress >= 1;
       const dropperScale = 0.5 + 0.5 * Math.min(1, readyProgress * 1.1);
@@ -3425,6 +3766,342 @@ export default function App() {
 
     // End playfield screen-shake transform
     ctx.restore();
+
+    // 9. Top Canvas Café Strip: Smoothie Order Ticket + 3-Step Blender OR Juice Fever Party Bar (y = 12..76)
+    if (gameState.status === 'PLAYING') {
+      const nowMs = performance.now();
+      const reqOrders = Math.max(
+        1,
+        (getConfig('ordersPerFever') as number) || 3,
+      );
+
+      if (feverTimerRef.current > 0) {
+        const feverDur =
+          (getConfig('feverDurationSeconds') as number) || 12.0;
+        const feverRatio = Math.max(
+          0,
+          Math.min(1, feverTimerRef.current / feverDur),
+        );
+        const barW = 456;
+        const barH = 62;
+        const barX = (canvasWidth - barW) / 2;
+        const barY = 12;
+        const pulse = 1 + 0.022 * Math.sin(nowMs * 0.016);
+        const hue = (nowMs * 0.2) % 360;
+
+        ctx.save();
+        ctx.translate(barX + barW / 2, barY + barH / 2);
+        ctx.scale(pulse, pulse);
+        ctx.translate(-barW / 2, -barH / 2);
+
+        // Deep festive berry backdrop with animated prismatic border
+        const borderGrad = ctx.createLinearGradient(0, 0, barW, barH);
+        borderGrad.addColorStop(0, `hsl(${hue}, 95%, 62%)`);
+        borderGrad.addColorStop(0.33, `hsl(${(hue + 110) % 360}, 95%, 60%)`);
+        borderGrad.addColorStop(0.66, `hsl(${(hue + 220) % 360}, 95%, 62%)`);
+        borderGrad.addColorStop(1, `hsl(${(hue + 320) % 360}, 95%, 62%)`);
+
+        ctx.fillStyle = 'rgba(56, 14, 44, 0.94)';
+        ctx.strokeStyle = borderGrad;
+        ctx.lineWidth = 3.5;
+        ctx.shadowColor = `hsla(${hue}, 95%, 60%, 0.55)`;
+        ctx.shadowBlur = 12;
+        ctx.beginPath();
+        ctx.roundRect(0, 0, barW, barH, 18);
+        ctx.fill();
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Title + Subtitle + Timer
+        ctx.textBaseline = 'middle';
+        ctx.textAlign = 'left';
+        ctx.font = '900 16px ' + THEME.fontFamily;
+        ctx.fillStyle = '#FDE68A';
+        ctx.fillText('🍹 JUICE FEVER! • 2.0x PTS', 16, 21);
+
+        ctx.textAlign = 'right';
+        ctx.font = '800 12px ' + THEME.fontFamily;
+        ctx.fillStyle = '#67E8F9';
+        ctx.fillText(
+          `NO CHERRIES ✨ ${feverTimerRef.current.toFixed(1)}s`,
+          barW - 16,
+          21,
+        );
+
+        // Draining Rainbow Fever Progress Track
+        const trackX = 16;
+        const trackY = 41;
+        const trackW = barW - 32;
+        const trackH = 10;
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.18)';
+        ctx.beginPath();
+        ctx.roundRect(trackX, trackY, trackW, trackH, 5);
+        ctx.fill();
+
+        if (feverRatio > 0) {
+          const fillGrad = ctx.createLinearGradient(
+            trackX,
+            0,
+            trackX + trackW,
+            0,
+          );
+          fillGrad.addColorStop(0, '#F43F5E');
+          fillGrad.addColorStop(0.28, '#F59E0B');
+          fillGrad.addColorStop(0.58, '#10B981');
+          fillGrad.addColorStop(0.82, '#06B6D4');
+          fillGrad.addColorStop(1, '#EC4899');
+          ctx.fillStyle = fillGrad;
+          ctx.beginPath();
+          ctx.roundRect(
+            trackX,
+            trackY,
+            Math.max(10, trackW * feverRatio),
+            trackH,
+            5,
+          );
+          ctx.fill();
+        }
+
+        ctx.restore();
+      } else if (currentOrderRef.current) {
+        const order = currentOrderRef.current;
+        const orderBonus =
+          (getConfig('smoothieOrderBonusPoints') as number) || 150;
+        const boardW = 434;
+        const boardH = 64;
+        const boardX = (canvasWidth - boardW) / 2;
+        const boardY = 12;
+        const popIn = Math.min(
+          1,
+          0.9 + Math.min(1, (nowMs - orderSpawnTimeRef.current) / 180) * 0.1,
+        );
+
+        ctx.save();
+        ctx.translate(boardX + boardW / 2, boardY + boardH / 2);
+        ctx.scale(popIn, popIn);
+        ctx.translate(-boardW / 2, -boardH / 2);
+
+        // Cozy wooden outer café board
+        ctx.fillStyle = 'rgba(114, 69, 36, 0.92)';
+        ctx.strokeStyle = '#5C3A21';
+        ctx.lineWidth = 2.5;
+        ctx.shadowColor = 'rgba(74, 40, 16, 0.22)';
+        ctx.shadowBlur = 8;
+        ctx.beginPath();
+        ctx.roundRect(0, 0, boardW, boardH, 18);
+        ctx.fill();
+        ctx.stroke();
+        ctx.shadowBlur = 0;
+
+        // Left: Pinned Cream Paper Recipe Ticket
+        const ticketX = 8;
+        const ticketY = 6;
+        const ticketW = 280;
+        const ticketH = 52;
+        ctx.fillStyle = '#FFFBF2';
+        ctx.strokeStyle = '#D4A373';
+        ctx.lineWidth = 1.8;
+        ctx.beginPath();
+        ctx.roundRect(ticketX, ticketY, ticketW, ticketH, 13);
+        ctx.fill();
+        ctx.stroke();
+
+        // Brass café pushpin + ORDER header & +150 ribbon on left of ticket
+        ctx.fillStyle = '#F59E0B';
+        ctx.strokeStyle = '#92400E';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.arc(ticketX + 14, ticketY + 11, 4, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.font = '900 10px ' + THEME.fontFamily;
+        ctx.fillStyle = '#8C5832';
+        ctx.fillText('SMOOTHIE', ticketX + 23, ticketY + 16);
+        ctx.font = '900 11px ' + THEME.fontFamily;
+        ctx.fillStyle = '#059669';
+        ctx.fillText(`+${orderBonus}`, ticketX + 23, ticketY + 34);
+
+        // Pure-visual fruit recipe medallions
+        const slotCount = order.slots.length;
+        const slotsStartX = ticketX + 116;
+        const slotSpacing = slotCount === 2 ? 64 : 52;
+        const slotCenterY = ticketY + ticketH / 2;
+
+        order.slots.forEach((slot, idx) => {
+          const sx = slotsStartX + idx * slotSpacing;
+          const sy = slotCenterY;
+          const slotTierConf = FRUIT_TIERS[slot.tier - 1] || FRUIT_TIERS[1];
+          const checkBounce = slot.completed
+            ? 1 + 0.28 * Math.exp(-Math.max(0, nowMs - slot.justCompletedAt) / 180)
+            : 1;
+
+          ctx.save();
+          ctx.translate(sx, sy);
+          ctx.scale(checkBounce, checkBounce);
+
+          // Medallion plate
+          ctx.fillStyle = slot.completed ? '#ECFDF5' : '#FAF3E7';
+          ctx.strokeStyle = slot.completed ? '#10B981' : '#C89666';
+          ctx.lineWidth = slot.completed ? 2.4 : 1.6;
+          if (!slot.completed) {
+            ctx.setLineDash([4, 3]);
+          }
+          ctx.beginPath();
+          ctx.arc(0, 0, 19, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+          ctx.setLineDash([]);
+
+          // Fruit icon inside medallion
+          ctx.save();
+          if (slot.completed) {
+            ctx.globalAlpha = 0.92;
+          }
+          drawFruitBody(ctx, slotTierConf, 13.5, 'none');
+          ctx.restore();
+
+          // Crisp green checkmark badge when completed!
+          if (slot.completed) {
+            ctx.fillStyle = '#10B981';
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.lineWidth = 1.8;
+            ctx.beginPath();
+            ctx.arc(13, 12, 7.5, 0, Math.PI * 2);
+            ctx.fill();
+            ctx.stroke();
+
+            ctx.strokeStyle = '#FFFFFF';
+            ctx.lineWidth = 2.2;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.beginPath();
+            ctx.moveTo(9.8, 12);
+            ctx.lineTo(12.2, 14.5);
+            ctx.lineTo(16.4, 9.6);
+            ctx.stroke();
+          }
+
+          ctx.restore();
+
+          // Subtle '+' between recipe ingredients
+          if (idx < slotCount - 1) {
+            ctx.font = '900 13px ' + THEME.fontFamily;
+            ctx.textAlign = 'center';
+            ctx.textBaseline = 'middle';
+            ctx.fillStyle = '#B47B48';
+            ctx.fillText('+', sx + slotSpacing / 2, sy + 0.5);
+          }
+        });
+
+        // Right: 3-Step Glass Smoothie Blender Meter
+        const blX = 296;
+        const blY = 6;
+        const blW = 130;
+        const blH = 52;
+        ctx.fillStyle = 'rgba(250, 243, 231, 0.16)';
+        ctx.strokeStyle = 'rgba(253, 230, 138, 0.35)';
+        ctx.lineWidth = 1.4;
+        ctx.beginPath();
+        ctx.roundRect(blX, blY, blW, blH, 13);
+        ctx.fill();
+        ctx.stroke();
+
+        // Procedural Glass Blender Pitcher (x = blX + 26, y = blY + 8..44)
+        const px = blX + 25;
+        const pyTop = blY + 10;
+        const pyBot = blY + 38;
+        const pTopW = 24;
+        const pBotW = 18;
+
+        // Pitcher handle on right
+        ctx.strokeStyle = '#E2E8F0';
+        ctx.lineWidth = 2.4;
+        ctx.beginPath();
+        ctx.arc(px + 11, (pyTop + pyBot) / 2, 7, -Math.PI * 0.45, Math.PI * 0.45);
+        ctx.stroke();
+
+        // Clip inside pitcher to render colorful layered smoothie juice (0..3 layers)
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(px - pTopW / 2, pyTop);
+        ctx.lineTo(px + pTopW / 2, pyTop);
+        ctx.lineTo(px + pBotW / 2, pyBot);
+        ctx.lineTo(px - pBotW / 2, pyBot);
+        ctx.closePath();
+        ctx.fillStyle = 'rgba(255, 255, 255, 0.22)';
+        ctx.fill();
+        ctx.clip();
+
+        const filledCount = Math.min(reqOrders, blenderCountRef.current);
+        const layerH = (pyBot - pyTop) / reqOrders;
+        for (let l = 0; l < filledCount; l++) {
+          const ly = pyBot - (l + 1) * layerH;
+          ctx.fillStyle = blenderColorsRef.current[l] || '#EC4899';
+          ctx.fillRect(px - pTopW, ly, pTopW * 2, layerH + 1);
+        }
+        if (filledCount > 0) {
+          // Creamy foam highlight on top of highest smoothie layer
+          const topFoamY = pyBot - filledCount * layerH;
+          ctx.fillStyle = 'rgba(255, 255, 255, 0.55)';
+          ctx.fillRect(px - pTopW, topFoamY, pTopW * 2, 2.2);
+        }
+        ctx.restore();
+
+        // Glass pitcher outline + lid + blender motor base
+        ctx.strokeStyle = '#F8FAFC';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(px - pTopW / 2, pyTop);
+        ctx.lineTo(px + pTopW / 2, pyTop);
+        ctx.lineTo(px + pBotW / 2, pyBot);
+        ctx.lineTo(px - pBotW / 2, pyBot);
+        ctx.closePath();
+        ctx.stroke();
+
+        // Blender lid
+        ctx.fillStyle = '#F43F5E';
+        ctx.beginPath();
+        ctx.roundRect(px - pTopW / 2 - 2, pyTop - 4, pTopW + 4, 4.5, 2);
+        ctx.fill();
+
+        // Blender base
+        ctx.fillStyle = '#CBD5E1';
+        ctx.beginPath();
+        ctx.roundRect(px - pBotW / 2 - 2, pyBot, pBotW + 4, 7, 2.5);
+        ctx.fill();
+
+        // FEVER label + 3 glowing pip dots on right of blender
+        ctx.textAlign = 'left';
+        ctx.textBaseline = 'middle';
+        ctx.font = '900 10px ' + THEME.fontFamily;
+        ctx.fillStyle = '#FDE68A';
+        ctx.fillText('FEVER', blX + 52, blY + 17);
+
+        ctx.font = '800 10px ' + THEME.fontFamily;
+        ctx.fillStyle = '#FEF3C7';
+        ctx.fillText(`${filledCount}/${reqOrders}`, blX + 94, blY + 17);
+
+        for (let p = 0; p < reqOrders; p++) {
+          const pipX = blX + 60 + p * 20;
+          const pipY = blY + 35;
+          const isLit = p < filledCount;
+          ctx.fillStyle = isLit
+            ? blenderColorsRef.current[p] || '#F59E0B'
+            : 'rgba(255, 255, 255, 0.2)';
+          ctx.strokeStyle = isLit ? '#FDE68A' : 'rgba(255, 255, 255, 0.4)';
+          ctx.lineWidth = 1.8;
+          ctx.beginPath();
+          ctx.arc(pipX, pipY, 6.5, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.stroke();
+        }
+
+        ctx.restore();
+      }
+    }
   };
 
   // Game Loop Ref Hookup
@@ -3485,6 +4162,8 @@ export default function App() {
 
   const musicPlaybackRate = antiGravityActive
     ? 0.94
+    : isFeverActive
+    ? 1.12
     : musicTensionTier === 2
     ? 1.09
     : musicTensionTier === 1
@@ -3510,6 +4189,10 @@ export default function App() {
       label: 'Merges',
       value: totalMerges,
     },
+    {
+      label: 'Orders',
+      value: `🍹 ${ordersCompleted}`,
+    },
   ];
 
   // Copy 1-click emoji scorecard for Daily Harvest or Classic runs
@@ -3520,10 +4203,13 @@ export default function App() {
       gameMode === 'DAILY'
         ? `${badgeEmoji} Juicy Drop — Daily Harvest #${dailyInfo.dayNumber} (${dailyInfo.dateLabel})`
         : `${badgeEmoji} Juicy Drop — Classic Run`;
+    const feverNote =
+      feversTriggered > 0 ? ` • 🎉 Fevers: ${feversTriggered}` : '';
     const scorecardText = [
       headerLine,
       `🏆 Score: ${gameState.score.toLocaleString()} • Best: ${bestFruitName}`,
       `🔥 Max Combo: ${Math.max(1, maxCombo)}x • Merges: ${totalMerges}`,
+      `🍹 Smoothie Orders: ${ordersCompleted}${feverNote}`,
       `https://smashing-fruits.netlify.app`,
     ].join('\n');
 
@@ -3793,7 +4479,7 @@ export default function App() {
       <div className="flex-1 w-full min-h-0 relative flex items-center justify-center pointer-events-auto touch-none select-none">
         {/* First drop onboarding visual prompt */}
         {assetsReady && gameState.status === 'PLAYING' && totalDrops === 0 && (
-          <div className="absolute top-2 z-10 pointer-events-none flex flex-col items-center animate-bounce px-4">
+          <div className="absolute top-[23%] z-10 pointer-events-none flex flex-col items-center animate-bounce px-4">
             <div className="bg-[#8C5832]/95 text-white text-xs md:text-sm font-black px-4 py-2 rounded-full shadow-lg border-2 border-[#E8CAAA] flex items-center gap-2">
               <span>👆 Drag to Aim &bull; Release or Tap to Drop!</span>
               <span className="hidden sm:inline text-yellow-300 font-bold">
@@ -3805,7 +4491,7 @@ export default function App() {
 
         {/* Anti-Gravity Onscreen tap hint */}
         {assetsReady && antiGravityActive && (
-          <div className="absolute top-3 z-10 pointer-events-none flex flex-col items-center animate-pulse px-3">
+          <div className="absolute top-[23%] z-10 pointer-events-none flex flex-col items-center animate-pulse px-3">
             <div className="bg-purple-900/90 text-purple-100 text-xs font-bold px-3 py-1.5 rounded-full shadow border border-purple-400 flex items-center gap-1.5">
               <span>
                 🌀 ZERO-G! Tap any floating fruit to push it toward its matching
@@ -3986,7 +4672,18 @@ export default function App() {
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  2. Special Drops: 🌈 Rainbow Dew &amp; 🫧 Fizz Berry
+                  2. 🍹 Smoothie Orders &amp; Juice Fever!
+                </strong>
+                Merge into the fruits shown on the top café recipe ticket in any
+                order (+150 pts each, never expires!). Complete{' '}
+                <strong>3 orders</strong> to fill the Blender and unleash{' '}
+                <strong>12s of Juice Fever</strong>: 2.0x points, upgraded drops
+                (no tiny Cherries!), faster dropping, and +50% power-up charge!
+              </div>
+
+              <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
+                <strong className="block text-[#8C5832] mb-1">
+                  3. Special Drops: 🌈 Rainbow Dew &amp; 🫧 Fizz Berry
                 </strong>
                 Hit a <strong>4x+ Combo</strong> or every 20 drops to earn a
                 Special Drop! <strong>Rainbow Dew</strong> upgrades any touched
@@ -3998,7 +4695,7 @@ export default function App() {
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  3. Merge-Charged 🌀 Zero-G &amp; 🧲 Magnet
+                  4. Merge-Charged 🌀 Zero-G &amp; 🧲 Magnet
                 </strong>
                 Both abilities start at 100% and recharge strictly by{' '}
                 <strong>merging fruits</strong> (1.75x faster on 3x+ combos!).
@@ -4009,11 +4706,12 @@ export default function App() {
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  4. 📅 Daily Harvest &amp; 👑 King Durian
+                  5. 📅 Daily Harvest &amp; 👑 King Durian
                 </strong>
                 Play Classic or compete in today&apos;s deterministic{' '}
                 <strong>Daily Harvest</strong> where everyone gets the exact
-                same sequence of drops, then copy your scorecard at the end!
+                same sequence of drops and Smoothie Orders, then copy your
+                scorecard at the end!
               </div>
             </div>
 

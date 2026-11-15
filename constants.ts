@@ -391,6 +391,42 @@ export const CONFIG = {
     label: '3x+ Combo Meter Charge Multiplier',
     group: 'Rules',
   },
+  smoothieOrderBonusPoints: {
+    value: 150,
+    type: 'number',
+    label: 'Smoothie Order Flat Bonus Points',
+    group: 'Rules',
+  },
+  ordersPerFever: {
+    value: 3,
+    type: 'number',
+    label: 'Completed Orders to Trigger Juice Fever',
+    group: 'Rules',
+  },
+  feverDurationSeconds: {
+    value: 12.0,
+    type: 'number',
+    label: 'Juice Fever Duration (s)',
+    group: 'Rules',
+  },
+  feverScoreMultiplier: {
+    value: 2.0,
+    type: 'number',
+    label: 'Juice Fever Score Multiplier',
+    group: 'Rules',
+  },
+  feverDropCooldownMs: {
+    value: 280,
+    type: 'number',
+    label: 'Juice Fever Drop Cooldown (ms)',
+    group: 'Rules',
+  },
+  feverChargeMultiplier: {
+    value: 1.5,
+    type: 'number',
+    label: 'Juice Fever Power-Up Charge Multiplier',
+    group: 'Rules',
+  },
 
   // Assets metadata references
   assetBgWidth: {

@@ -95,7 +95,10 @@ export function Overlay({
             </p>
           )}
           {stats && stats.length > 0 && (
-            <div className="grid grid-cols-3 gap-2.5 w-full max-w-sm mb-7">
+            <div
+              className={`grid ${
+                stats.length === 4 ? 'grid-cols-2 sm:grid-cols-4' : 'grid-cols-3'
+              } gap-2.5 w-full max-w-md mb-7`}>
               {stats.map((stat) => (
                 <div
                   key={stat.label}
@@ -960,6 +963,81 @@ class GameAudio {
         freq: freq * v,
         dur: 0.32,
         gain: 0.055,
+      });
+    });
+  }
+
+  playOrderCheck() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.015);
+    this.blip(b, b.now, {
+      type: 'sine',
+      freq: 1318.51 * v,
+      dur: 0.075,
+      gain: 0.075,
+    });
+    this.blip(b, b.now + 0.05, {
+      type: 'triangle',
+      freq: 1975.53 * v,
+      dur: 0.14,
+      gain: 0.07,
+    });
+  }
+
+  playOrderComplete() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.015);
+    const notes = [523.25, 659.25, 783.99, 1046.5];
+    notes.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.055, {
+        type: 'triangle',
+        freq: freq * v,
+        dur: 0.2,
+        gain: 0.08,
+      });
+    });
+  }
+
+  playFeverStart() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.01);
+    const fanfare = [523.25, 659.25, 783.99, 1046.5, 1318.51, 1567.98];
+    fanfare.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.055, {
+        type: 'triangle',
+        freq: freq * v,
+        dur: 0.28,
+        gain: 0.095,
+      });
+      this.blip(b, b.now + i * 0.055, {
+        type: 'sine',
+        freq: freq * 2 * v,
+        dur: 0.18,
+        gain: 0.045,
+      });
+    });
+    this.noiseBurst(b, b.now + 0.15, {
+      dur: 0.25,
+      gain: 0.07,
+      from: 3200,
+      to: 1200,
+    });
+  }
+
+  playFeverEnd() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.015);
+    const notes = [783.99, 659.25, 523.25];
+    notes.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.065, {
+        type: 'sine',
+        freq: freq * v,
+        dur: 0.24,
+        gain: 0.06,
       });
     });
   }

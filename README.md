@@ -10,6 +10,7 @@
 
 ## ✨ Features
 
+- **Smoothie Orders & Juice Fever Mode**: Complete cozy, never-expiring visual fruit recipes (`2–3` fruit icons pinned on the café plaque above the dropper, `+150 pts` each) to fill the **3-step Smoothie Blender**. Filling `3/3` unleashes **12 seconds of Juice Fever**: `2.0x` points, `+1` tier upgraded drops (zero tiny Cherries!), faster `280ms` dropping, `+50%` power-up meter charge, rainbow jar lighting, and an upbeat `1.12x` music groove!
 - **Smart Swept-Circle Raycast Aiming**: Projects the exact landing ghost preview along the drop trajectory and glows with contextual badges (`✨ MERGE!`, `🌈 WILDCARD!`, or `🫧 FIZZ BLAST!`) while lighting up target fruits with starry eyes in real time.
 - **1-Slot Hold / Swap Basket**: Stash an awkward drop—or save a rare special drop for a clutch combo—using the HUD **HOLD** slot or `C` / `Shift` (`1` swap per drop, unlocked after each drop).
 - **Earned & Paced Special Drops**: Trigger a `4x+` combo chain or hit every `20th` drop to earn a rare catalyst drop:
