@@ -5,6 +5,7 @@ import React, {
   useRef,
   useState,
   type MutableRefObject,
+  type ReactNode,
   type RefObject,
 } from 'react';
 
@@ -22,10 +23,10 @@ interface OverlayProps {
   description?: string;
   actionLabel: string;
   onAction: () => void;
-  icon?: React.ReactNode;
+  icon?: ReactNode;
   secondaryActionLabel?: string;
   onSecondaryAction?: () => void;
-  secondaryIcon?: React.ReactNode;
+  secondaryIcon?: ReactNode;
   stats?: Array<{label: string; value: string | number}>;
   tone?: OverlayTone;
   autoFocus?: boolean;
@@ -133,7 +134,7 @@ export function Overlay({
 }
 
 export interface MenuOverlayProps {
-  children: React.ReactNode;
+  children: ReactNode;
   tone?: OverlayTone;
   zIndex?: number;
 }
