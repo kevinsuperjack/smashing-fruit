@@ -28,6 +28,7 @@ interface OverlayProps {
   onSecondaryAction?: () => void;
   secondaryIcon?: ReactNode;
   stats?: Array<{label: string; value: string | number}>;
+  extraFooter?: ReactNode;
   tone?: OverlayTone;
   autoFocus?: boolean;
 }
@@ -74,6 +75,7 @@ export function Overlay({
   onSecondaryAction,
   secondaryIcon,
   stats,
+  extraFooter,
   tone = 'neutral',
   autoFocus = true,
 }: OverlayProps) {
@@ -127,6 +129,11 @@ export function Overlay({
               </button>
             )}
           </div>
+          {extraFooter && (
+            <div className="mt-4 flex flex-col items-center w-full max-w-sm">
+              {extraFooter}
+            </div>
+          )}
         </div>
       </div>
     </div>
@@ -871,6 +878,91 @@ class GameAudio {
       gain: 0.045 * clampedIntensity,
     });
   }
+
+  playBasketSwap() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.02);
+    this.blip(b, b.now, {
+      type: 'triangle',
+      freq: 698.46 * v,
+      freqTo: 880 * v,
+      dur: 0.065,
+      gain: 0.08,
+    });
+    this.blip(b, b.now + 0.05, {
+      type: 'sine',
+      freq: 1046.5 * v,
+      dur: 0.09,
+      gain: 0.07,
+    });
+  }
+
+  playMeterReady() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.015);
+    this.blip(b, b.now, {
+      type: 'sine',
+      freq: 880 * v,
+      dur: 0.09,
+      gain: 0.06,
+    });
+    this.blip(b, b.now + 0.06, {
+      type: 'sine',
+      freq: 1318.51 * v,
+      dur: 0.16,
+      gain: 0.075,
+    });
+  }
+
+  playWildcardShimmer() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.02);
+    const notes = [587.33, 739.99, 880.0, 1174.66, 1479.98, 1760.0];
+    notes.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.045, {
+        type: 'sine',
+        freq: freq * v,
+        dur: 0.22,
+        gain: 0.065,
+      });
+    });
+  }
+
+  playFizzPop() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.05);
+    this.noiseBurst(b, b.now, {dur: 0.22, gain: 0.11, from: 2600, to: 650});
+    const bubbles = [480, 680, 920, 1240];
+    bubbles.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.035, {
+        type: 'sine',
+        freq: freq * v,
+        freqTo: freq * 1.45 * v,
+        dur: 0.075,
+        gain: 0.07,
+      });
+    });
+  }
+
+  playReliefSplash() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.015);
+    // Warm calming major-7th descending chord
+    const chord = [1046.5, 783.99, 659.25, 523.25];
+    chord.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.05, {
+        type: 'triangle',
+        freq: freq * v,
+        dur: 0.32,
+        gain: 0.055,
+      });
+    });
+  }
 }
 
 /** Shared singleton — import and use anywhere. */
@@ -883,6 +975,45 @@ export const gameAudio = new GameAudio();
 export const clamp = (value: number, min: number, max: number): number => {
   return Math.max(min, Math.min(max, value));
 };
+
+/**
+ * Deterministic string-seeded PRNG (xfnv1a + mulberry32) for Daily Harvest runs.
+ */
+export function createSeededRng(seedStr: string): () => number {
+  let h = 2166136261 >>> 0;
+  for (let i = 0; i < seedStr.length; i++) {
+    h = Math.imul(h ^ seedStr.charCodeAt(i), 16777619);
+  }
+  let state = (h >>> 0) || 0x9e3779b9;
+  return () => {
+    state = (state + 0x6d2b79f5) | 0;
+    let t = Math.imul(state ^ (state >>> 15), 1 | state);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/**
+ * Computes today's local calendar Daily Harvest seed key and sequential puzzle number.
+ */
+export function getDailyHarvestInfo(now = new Date()): {
+  seedKey: string;
+  dayNumber: number;
+  dateLabel: string;
+} {
+  const year = now.getFullYear();
+  const month = String(now.getMonth() + 1).padStart(2, '0');
+  const day = String(now.getDate()).padStart(2, '0');
+  const seedKey = `${year}-${month}-${day}`;
+  const epochUtc = Date.UTC(2026, 6, 1); // July 1, 2026 launch epoch
+  const todayUtc = Date.UTC(year, now.getMonth(), now.getDate());
+  const dayNumber = Math.max(1, Math.floor((todayUtc - epochUtc) / 86400000) + 1);
+  return {
+    seedKey,
+    dayNumber,
+    dateLabel: `${year}-${month}-${day}`,
+  };
+}
 
 export const shuffle = <T,>(items: T[]): T[] => {
   const result = [...items];

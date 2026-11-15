@@ -16,6 +16,40 @@ export const THEME = {
 };
 
 /**
+ * Special drop item kinds spawned via combo rewards or drop cadence.
+ */
+export type SpecialDropKind = 'none' | 'rainbow' | 'fizz';
+
+/**
+ * Queue / dropper item descriptor (normal tier 1..5 fruit or special drop).
+ */
+export interface DropItem {
+  tier: number;
+  special: SpecialDropKind;
+}
+
+/**
+ * Visual and physics metadata for Special Drops.
+ */
+export const SPECIAL_DROPS: Record<
+  Exclude<SpecialDropKind, 'none'>,
+  {name: string; radius: number; color: string; points: number}
+> = {
+  rainbow: {
+    name: 'Rainbow Dew',
+    radius: 28,
+    color: '#EC4899',
+    points: 50,
+  },
+  fizz: {
+    name: 'Fizz Berry',
+    radius: 30,
+    color: '#06B6D4',
+    points: 40,
+  },
+};
+
+/**
  * Fruit Tier definition interface
  */
 export interface FruitTier {
@@ -319,6 +353,42 @@ export const CONFIG = {
     value: true,
     type: 'boolean',
     label: 'King Durian Pinnacle Victory Prompt',
+    group: 'Rules',
+  },
+  specialDropCadence: {
+    value: 20,
+    type: 'number',
+    label: 'Drops Between Guaranteed Specials',
+    group: 'Rules',
+  },
+  specialComboTrigger: {
+    value: 4,
+    type: 'number',
+    label: 'Combo Chain to Earn Special Drop',
+    group: 'Rules',
+  },
+  rainbowMaxTargetTier: {
+    value: 9,
+    type: 'number',
+    label: 'Max Tier Upgraded by Rainbow Dewdrop',
+    group: 'Rules',
+  },
+  zeroGChargeBase: {
+    value: 10,
+    type: 'number',
+    label: 'Zero-G Base Merge Charge (%)',
+    group: 'Rules',
+  },
+  magnetChargeBase: {
+    value: 14,
+    type: 'number',
+    label: 'Magnet Base Merge Charge (%)',
+    group: 'Rules',
+  },
+  comboChargeMultiplier: {
+    value: 1.75,
+    type: 'number',
+    label: '3x+ Combo Meter Charge Multiplier',
     group: 'Rules',
   },
 

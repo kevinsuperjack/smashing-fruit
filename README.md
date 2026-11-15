@@ -10,42 +10,48 @@
 
 ## ✨ Features
 
-- **Smart Swept-Circle Raycast Aiming**: Projects the exact landing ghost preview along the drop trajectory and glows emerald-gold with a `✨ MERGE!` badge when aimed directly onto a matching fruit.
+- **Smart Swept-Circle Raycast Aiming**: Projects the exact landing ghost preview along the drop trajectory and glows with contextual badges (`✨ MERGE!`, `🌈 WILDCARD!`, or `🫧 FIZZ BLAST!`) while lighting up target fruits with starry eyes in real time.
+- **1-Slot Hold / Swap Basket**: Stash an awkward drop—or save a rare special drop for a clutch combo—using the HUD **HOLD** slot or `C` / `Shift` (`1` swap per drop, unlocked after each drop).
+- **Earned & Paced Special Drops**: Trigger a `4x+` combo chain or hit every `20th` drop to earn a rare catalyst drop:
+  - **🌈 Rainbow Dewdrop** (`r=28px`): Wildcard-merges with the first fruit it touches up to **Peach** (`Tier 9` -> **Pineapple**), grants a **`+250` Prismatic Bonus** on endgame fruits (**Pineapple** through **King Durian**) without consuming them, or merges with another Rainbow Dewdrop into a **Cucumber** (`Tier 6`).
+  - **🫧 Fizz Berry** (`r=30px`): Settles into the pile and detonates when any adjacent merge happens nearby (or when two Fizz Berries collide), popping up to `3` nearby **Cherry** / **Strawberry** clutter berries for `2x` points and `+20%` power-up meter charge!
 - **Rapid-Merge Combo System**: Chain merges within a `2.2s` combo window to scale score multipliers up to `3.0x`, complete with musical ascending combo chimes, expanding shockwave rings, floating score popups, and screen shake.
+- **Reactive Fruit Expressions & Dynamic Audio Tension**: Fruits come alive with contextual procedural faces—starry-eyed merge anticipation, dizzy spirals after hard collisions, worried sweat drops near the danger line, shocked gasps during the overflow countdown, sleepy blinks at the bottom of the pile, and Zero-G joy—paired with smooth Web Audio background music tempo shifts (`0.94x` Zero-G float, `1.04x` simmer, `1.09x` danger rush) and a refreshing splash chime when danger clears.
 - **Squash-and-Stretch & Tactile Physics**: Powered by **Matter.js** with custom bounciness, friction, density scaling, spring-damper impact deformation, and tier-pitched bounce thuds.
 - **13 Fruit Evolution Tiers**: Merge matching fruits from a tiny **Cherry** (`2 pts`) past the slippery **Cucumber** (`48 pts`) and giant **Watermelon** (`2,048 pts`) all the way to the royal **King Durian** (`5,000 pts`).
-- **Interactive Power-Up System**:
-  - **🌀 Zero-G Anti-Gravity** (`Z` or `1` key / HUD button, `15s` cooldown, `5s` duration): Reverses gravity for `5 seconds` with a safety ceiling barrier—tap any floating fruit to impulse-launch it toward its matching twin!
-  - **🧲 Magnet Beam** (`M` or `2` key / HUD button, `12s` cooldown, `2.2s` tractor pull): Locks onto the highest-tier matching fruit pair in the jar and pulls them together over `2.2 seconds` with an electric tractor beam.
+- **Merge-Charged Power-Up System**: Zero passive waiting—both **Zero-G** and **Magnet** start at `100%` charge and refill strictly through merges (`1.75x` faster on `3x+` combos!):
+  - **🌀 Zero-G Anti-Gravity** (`Z` or `1` key / HUD button, `100%` Juice Meter, `5s` duration): Reverses gravity for `5 seconds` with a safety ceiling barrier—tap any floating fruit to impulse-launch it toward its matching twin!
+  - **🧲 Magnet Beam** (`M` or `2` key / HUD button, `100%` Juice Meter, `2.2s` tractor pull): Locks onto the highest-tier matching fruit pair in the jar and pulls them together over `2.2 seconds` with an electric tractor beam.
+- **Daily Harvest Mode & Shareable Scorecards**: Compete on deterministic date-seeded daily drops (`DAILY HARVEST #<day>`) where every player worldwide gets the exact same drop sequence, track your daily personal best, and copy a Spoiler-Free emoji scorecard in one click on Victory or Game Over.
 - **Endless Mode & Session Stats**: Merge two Watermelons to evolve the **King Durian**, and merge two King Durians for `+10,000` bonus points and the `"👑 KING DURIAN CROWNED! 🎉"` victory—then choose **`Keep Playing (Endless)`** to keep chasing high scores, with a **Best Fruit / Max Combo / Total Merges** summary on Victory and Game Over screens.
-- **Procedural Audio & Music**: Built-in **Web Audio API** synthesizer (ascending combo chimes, tier-pitched soft bounce thuds, and celebration fanfares) plus cozy background music with persistent Music and SFX mute controls.
+- **Procedural Audio & Music**: Built-in **Web Audio API** synthesizer (ascending combo chimes, basket swap swooshes, meter-ready arpeggios, prismatic shimmers, fizz pops, tier-pitched bounce thuds, and celebration fanfares) plus dynamic-tempo background music with persistent Music and SFX mute controls.
 
 ---
 
 ## 🎮 How to Play & Controls
 
-1. **Aim** the dropper horizontally across the top of the jar using the swept-circle ghost preview (`✨ MERGE!` highlights direct matching hits in emerald-gold).
-2. **Drop** the current fruit into the jar (`450ms` drop cooldown). Only the first 5 tiers (**Cherry** through **Persimmon**) spawn in the dropper.
-3. **Merge & Combo** identical fruits on contact within the `2.2s` combo chain window to evolve them into the next tier and scale multipliers up to `3.0x`!
-4. **Activate Power-Ups** to unstick crowded piles in Zero-G or pull high-tier twins together across the jar with the Magnet Beam.
-5. **Watch the Danger Line**: If settled fruits stay stacked above the red dashed danger line at the top of the jar for more than `2.5 seconds`, it's **Game Over**.
+1. **Choose Your Mode**: Play **Classic** for randomized arcade runs or **Daily Harvest** for today's deterministic global seed.
+2. **Aim & Hold**: Aim horizontally with the swept-circle ghost preview (`✨ MERGE!`, `🌈 WILDCARD!`, `🫧 FIZZ BLAST!`), or press **HOLD** (`C` / `Shift`) once per turn to stash/swap with your basket.
+3. **Drop & Evolve**: Drop fruits (`450ms` cooldown) to merge identical pairs within the `2.2s` combo window—scaling score multipliers up to `3.0x`, charging your **Zero-G** & **Magnet** meters, and earning **Rainbow Dewdrop** or **Fizz Berry** catalysts on `4x+` combos (or every `20` drops)!
+4. **Unleash Merge-Charged Power-Ups**: Spend full `100%` Juice Meters to float and tap-launch fruits in **Zero-G** or tractor-pull high-tier twins with **Magnet**.
+5. **Watch the Danger Line**: Fruits near the red dashed danger line start sweating as the music speeds up—if settled fruits stay above the line for more than `2.5 seconds`, it's **Game Over**.
 
 ### Controls
 
-| Input Method | Aim Left / Right | Drop Fruit | Zero-G Anti-Gravity | Magnet Beam | Pause / Modals |
-| :--- | :--- | :--- | :--- | :--- | :--- |
-| **Mouse** | Move cursor inside the jar | Left Click / Release (or click floating fruit in Zero-G) | Click **Zero-G** HUD button | Click **Magnet** HUD button | Click **Menu** / `✕` button |
-| **Touch** | Touch and drag inside the jar | Release finger (or tap floating fruit in Zero-G) | Tap **Zero-G** HUD button | Tap **Magnet** HUD button | Tap **Menu** / `✕` button |
-| **Keyboard** | `←` / `→` Arrow Keys or `A` / `D` | `S` / `↓` / `Spacebar` / `Enter` | `Z` or `1` | `M` or `2` | `Escape` (closes modals / toggles pause menu) |
+| Input Method | Aim Left / Right | Drop Fruit | Hold / Swap Basket | Zero-G Anti-Gravity | Magnet Beam | Pause / Modals |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Mouse** | Move cursor inside the jar | Left Click / Release (or click floating fruit in Zero-G) | Click **HOLD** HUD slot | Click **Zero-G** HUD button | Click **Magnet** HUD button | Click **Menu** / `✕` button |
+| **Touch** | Touch and drag inside the jar | Release finger (or tap floating fruit in Zero-G) | Tap **HOLD** HUD slot | Tap **Zero-G** HUD button | Tap **Magnet** HUD button | Tap **Menu** / `✕` button |
+| **Keyboard** | `←` / `→` Arrow Keys or `A` / `D` | `S` / `↓` / `Spacebar` / `Enter` | `C` or `Shift` | `Z` or `1` | `M` or `2` | `Escape` (closes modals / toggles pause menu) |
 
 ---
 
-## ⚡ Power-Up System
+## ⚡ Power-Up System (Merge-Charged)
 
-| Power-Up | Shortcut | Cooldown | Duration | Effect |
+| Power-Up | Shortcut | Charge Economy | Duration | Effect |
 | :--- | :---: | :---: | :---: | :--- |
-| **🌀 Zero-G Anti-Gravity** | `Z` / `1` | `15s` | `5s` | Reverses gravity inside the jar with a protective ceiling barrier so fruits float upward without spilling over. Tap/click any floating fruit during Zero-G to impulse-launch it directly toward its matching twin! |
-| **🧲 Magnet Beam** | `M` / `2` | `12s` | `2.2s` tractor pull | Scans the jar for the highest-tier matching pair of fruits, locks onto them with an electric tractor beam, and pulls them together over `2.2s` for an effortless merge. |
+| **🌀 Zero-G Anti-Gravity** | `Z` / `1` | Starts at `100%`; refills via merges (`+10%` + tier bonus, `1.75x` on `3x+` combos) | `5s` | Reverses gravity inside the jar with a protective ceiling barrier so fruits float upward without spilling over. Tap/click any floating fruit during Zero-G to impulse-launch it directly toward its matching twin! |
+| **🧲 Magnet Beam** | `M` / `2` | Starts at `100%`; refills via merges (`+14%` + tier bonus, `1.75x` on `3x+` combos) | `2.2s` tractor pull | Scans the jar for the highest-tier matching pair of fruits, locks onto them with an electric tractor beam, and pulls them together over `2.2s` for an effortless merge. |
 
 ---
 

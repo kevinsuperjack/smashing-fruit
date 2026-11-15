@@ -12,6 +12,8 @@ export interface BackgroundMusicProps {
   readonly isMuted?: boolean;
   /** Master volume level between 0.0 (silent) and 1.0 (full). Defaults to 0.15. */
   readonly volume?: number;
+  /** Dynamic tempo/pitch multiplier (clamped 0.75..1.35). Defaults to 1.0. */
+  readonly playbackRate?: number;
 }
 
 /**
@@ -236,6 +238,7 @@ export function BackgroundMusic({
   isPlaying,
   isMuted = false,
   volume = DEFAULT_VOLUME,
+  playbackRate = 1.0,
 }: BackgroundMusicProps): React.ReactElement | null {
   const audioCtxRef = useRef<AudioContext | null>(null);
   const masterGainRef = useRef<GainNode | null>(null);
@@ -244,6 +247,9 @@ export function BackgroundMusic({
   const loopResultRef = useRef<SeamlessLoopResult | null>(null);
   const unlockCleanupRef = useRef<(() => void) | null>(null);
   const fallbackAudioRef = useRef<HTMLAudioElement | null>(null);
+  const playbackRateRef = useRef<number>(
+    Math.max(0.75, Math.min(1.35, Number.isFinite(playbackRate) ? playbackRate : 1.0)),
+  );
 
   const isPlayingRef = useRef(isPlaying);
   const [useFallback, setUseFallback] = useState(false);
@@ -380,6 +386,7 @@ export function BackgroundMusic({
     source.loop = true;
     source.loopStart = loopResult.loopStartSec;
     source.loopEnd = loopResult.loopEndSec;
+    source.playbackRate.setValueAtTime(playbackRateRef.current, ctx.currentTime);
 
     // 25ms initial anti-click fade-in
     const trackGain = ctx.createGain();
@@ -540,6 +547,28 @@ export function BackgroundMusic({
       );
     }
   }, [effectiveMuted, volume, useFallback]);
+
+  // Smoothly glide playbackRate on tension/Zero-G state transitions
+  useEffect(() => {
+    const safeRate = Math.max(
+      0.75,
+      Math.min(1.35, Number.isFinite(playbackRate) ? playbackRate : 1.0),
+    );
+    playbackRateRef.current = safeRate;
+
+    if (useFallback) {
+      if (fallbackAudioRef.current) {
+        fallbackAudioRef.current.playbackRate = safeRate;
+      }
+      return;
+    }
+
+    const ctx = audioCtxRef.current;
+    const src = sourceNodeRef.current;
+    if (ctx && src && ctx.state !== 'closed') {
+      src.playbackRate.setTargetAtTime(safeRate, ctx.currentTime, 0.08);
+    }
+  }, [playbackRate, useFallback]);
 
   // Cleanup on component unmount
   useEffect(() => {

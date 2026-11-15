@@ -1,8 +1,9 @@
 import React, {useEffect, useId, useState} from 'react';
-import {FruitTier} from '../constants';
+import {FruitTier, SpecialDropKind} from '../constants';
 
 export interface FruitBadgeIconProps {
   tier: FruitTier;
+  special?: SpecialDropKind;
   assetUrl?: string;
   imageLoaded?: boolean;
   size?: number;
@@ -78,6 +79,7 @@ const RIGHT_EYE_STAR = buildFourPointStarPath(38.6, 33.1, 2.35, 0.85);
 
 export function FruitBadgeIcon({
   tier,
+  special = 'none',
   assetUrl,
   imageLoaded,
   size = 24,
@@ -89,6 +91,120 @@ export function FruitBadgeIcon({
   useEffect(() => {
     setImgError(false);
   }, [assetUrl]);
+
+  // Special 1: Rainbow Dewdrop Wildcard SVG
+  if (special === 'rainbow') {
+    const rainbowGradId = `rainbow-dew-${safeId}`;
+    const rainbowRingId = `rainbow-ring-${safeId}`;
+    const starPath = buildFourPointStarPath(44, 19, 6.5, 2.2);
+
+    return (
+      <svg
+        viewBox="0 0 64 64"
+        width={size}
+        height={size}
+        style={{width: size, height: size}}
+        role="img"
+        aria-label="Rainbow Dewdrop"
+        className="pointer-events-none select-none shrink-0"
+      >
+        <defs>
+          <linearGradient id={rainbowGradId} x1="0%" y1="0%" x2="100%" y2="100%">
+            <stop offset="0%" stopColor="#FF595E" />
+            <stop offset="25%" stopColor="#FFCA3A" />
+            <stop offset="50%" stopColor="#8AC926" />
+            <stop offset="75%" stopColor="#1982C4" />
+            <stop offset="100%" stopColor="#B5179E" />
+          </linearGradient>
+          <linearGradient id={rainbowRingId} x1="100%" y1="0%" x2="0%" y2="100%">
+            <stop offset="0%" stopColor="#FDE047" />
+            <stop offset="50%" stopColor="#F472B6" />
+            <stop offset="100%" stopColor="#38BDF8" />
+          </linearGradient>
+        </defs>
+        <circle
+          cx="32"
+          cy="32"
+          r="27"
+          fill={`url(#${rainbowGradId})`}
+          stroke={`url(#${rainbowRingId})`}
+          strokeWidth="3.5"
+        />
+        <ellipse
+          cx="23"
+          cy="20"
+          rx="8.5"
+          ry="5"
+          transform="rotate(-28 23 20)"
+          fill="#FFFFFF"
+          fillOpacity="0.65"
+        />
+        <path d={starPath} fill="#FFFFFF" />
+        <circle cx="24" cy="34" r="3" fill="#2C1810" />
+        <circle cx="40" cy="34" r="3" fill="#2C1810" />
+        <circle cx="23" cy="33" r="1.2" fill="#FFFFFF" />
+        <circle cx="39" cy="33" r="1.2" fill="#FFFFFF" />
+        <path
+          d="M 27.5 39 Q 32 43.5 36.5 39"
+          fill="none"
+          stroke="#2C1810"
+          strokeWidth="2.4"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+
+  // Special 2: Fizz Berry Catalyst SVG
+  if (special === 'fizz') {
+    const fizzGradId = `fizz-berry-${safeId}`;
+
+    return (
+      <svg
+        viewBox="0 0 64 64"
+        width={size}
+        height={size}
+        style={{width: size, height: size}}
+        role="img"
+        aria-label="Fizz Berry"
+        className="pointer-events-none select-none shrink-0"
+      >
+        <defs>
+          <radialGradient id={fizzGradId} cx="35%" cy="30%" r="70%">
+            <stop offset="0%" stopColor="#A5F3FC" />
+            <stop offset="55%" stopColor="#06B6D4" />
+            <stop offset="100%" stopColor="#0E7490" />
+          </radialGradient>
+        </defs>
+        <circle
+          cx="32"
+          cy="32"
+          r="27"
+          fill={`url(#${fizzGradId})`}
+          stroke="#67E8F9"
+          strokeWidth="3.5"
+          strokeDasharray="6 3"
+        />
+        {/* Effervescent internal bubbles */}
+        <circle cx="20" cy="21" r="4" fill="#FFFFFF" fillOpacity="0.55" />
+        <circle cx="44" cy="22" r="3" fill="#FEF08A" fillOpacity="0.7" />
+        <circle cx="18" cy="43" r="2.6" fill="#FFFFFF" fillOpacity="0.5" />
+        <circle cx="45" cy="44" r="3.4" fill="#A7F3D0" fillOpacity="0.65" />
+        <circle cx="32" cy="16" r="2.2" fill="#FFFFFF" fillOpacity="0.7" />
+        {/* Cute energetic face */}
+        <circle cx="24" cy="33" r="3.1" fill="#083344" />
+        <circle cx="40" cy="33" r="3.1" fill="#083344" />
+        <circle cx="23" cy="32" r="1.2" fill="#FFFFFF" />
+        <circle cx="39" cy="32" r="1.2" fill="#FFFFFF" />
+        <path
+          d="M 27 38.5 Q 32 44 37 38.5 Z"
+          fill="#F43F5E"
+          stroke="#083344"
+          strokeWidth="1.8"
+        />
+      </svg>
+    );
+  }
 
   // Tier 6: Procedural Cucumber SVG
   if (tier.tier === 6) {

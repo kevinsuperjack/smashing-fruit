@@ -13,27 +13,35 @@ import {
   Sparkles,
   Zap,
   Compass,
+  ArrowLeftRight,
+  Calendar,
+  Copy,
+  Check,
 } from 'lucide-react';
-import React, {useCallback, useEffect, useRef, useState} from 'react';
+import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
   CONFIG,
+  DropItem,
   FRUIT_TIERS,
   FruitTier,
   getConfig,
+  SPECIAL_DROPS,
+  SpecialDropKind,
   THEME,
 } from './constants';
 import BackgroundMusic from './utils/BackgroundMusic';
 import {FruitBadgeIcon} from './components/FruitBadgeIcon';
 import {
   createFixedStepper,
+  createSeededRng,
   drawBackground,
   gameAudio,
   GameState,
+  getDailyHarvestInfo,
   MenuOverlay,
   Overlay,
   prepareCanvas,
   useAssets,
-  useAutoFocus,
   useInput,
   useIsMobile,
 } from './utils/helper';
@@ -45,8 +53,20 @@ import {
 
 const BACKGROUND_MUSIC_URL = 'assets/audio/bgm_cozy_orchard.mp3';
 const HIGH_SCORE_STORAGE_KEY = 'juicydrop_highscore_v2';
+const DAILY_HIGH_SCORE_PREFIX = 'juicydrop_daily_best_v1_';
 const SFX_MUTE_STORAGE_KEY = 'juicydrop_sfx_muted_v1';
 const MUSIC_MUTE_STORAGE_KEY = 'juicydrop_music_muted_v1';
+
+type GameMode = 'CLASSIC' | 'DAILY';
+type FruitExpression =
+  | 'happy'
+  | 'bouncy'
+  | 'shocked'
+  | 'sleepy'
+  | 'regal'
+  | 'sweating'
+  | 'dizzy'
+  | 'starry';
 
 const ASSETS_MANIFEST: Record<string, string> = {
   cozy_wooden_backdrop: 'assets/images/cozy_wooden_backdrop.png',
@@ -109,6 +129,7 @@ interface ShockwaveRing {
 interface FruitEntity {
   id: string;
   tier: number;
+  special: SpecialDropKind;
   body: Matter.Body;
   spawnTime: number;
   renderScale: number;
@@ -120,9 +141,48 @@ interface FruitEntity {
   lastImpactTime: number;
   blinkTimer: number;
   isBlinking: boolean;
-  expression: 'happy' | 'bouncy' | 'shocked' | 'sleepy' | 'regal';
+  expression: FruitExpression;
   expressionTimer: number;
   merged: boolean;
+}
+
+interface MergeQueueEntry {
+  fruitA: FruitEntity;
+  fruitB: FruitEntity;
+  midX: number;
+  midY: number;
+  kind: 'normal' | 'rainbow' | 'fizz_pair';
+}
+
+function getDropItemDetails(item: DropItem): {
+  name: string;
+  radius: number;
+  color: string;
+  tierConfig: FruitTier;
+} {
+  if (item.special !== 'none') {
+    const spec = SPECIAL_DROPS[item.special];
+    return {
+      name: spec.name,
+      radius: spec.radius,
+      color: spec.color,
+      tierConfig: FRUIT_TIERS[0],
+    };
+  }
+  const tierConfig = FRUIT_TIERS[item.tier - 1] || FRUIT_TIERS[0];
+  return {
+    name: tierConfig.name,
+    radius: tierConfig.radius,
+    color: tierConfig.color,
+    tierConfig,
+  };
+}
+
+function getFruitEntityRadius(fruit: FruitEntity): number {
+  if (fruit.special !== 'none') {
+    return SPECIAL_DROPS[fruit.special].radius;
+  }
+  return FRUIT_TIERS[fruit.tier - 1]?.radius || 22;
 }
 
 // Active Magnet pull state
@@ -191,23 +251,48 @@ export default function App() {
   });
   const [totalDrops, setTotalDrops] = useState(0);
   const [isEndlessMode, setIsEndlessMode] = useState(false);
+  const [gameMode, setGameMode] = useState<GameMode>('CLASSIC');
+  const dailyInfo = useMemo(() => getDailyHarvestInfo(), []);
+  const [dailyHighScore, setDailyHighScore] = useState<number>(() => {
+    if (typeof window === 'undefined') return 0;
+    try {
+      const saved = localStorage.getItem(
+        `${DAILY_HIGH_SCORE_PREFIX}${getDailyHarvestInfo().seedKey}`,
+      );
+      return saved ? Math.max(0, parseInt(saved, 10) || 0) : 0;
+    } catch {
+      return 0;
+    }
+  });
+  const [scorecardCopied, setScorecardCopied] = useState(false);
   const [maxCombo, setMaxCombo] = useState(0);
   const [totalMerges, setTotalMerges] = useState(0);
   const [highestTier, setHighestTier] = useState(1);
+  const [musicTensionTier, setMusicTensionTier] = useState<0 | 1 | 2>(0);
 
-  // Power-up States & Cooldowns
-  const [antiGravityCooldown, setAntiGravityCooldown] = useState<number>(0);
+  // Merge-Charged Power-up States (0..100%, start ready at 100%)
+  const [antiGravityCharge, setAntiGravityCharge] = useState<number>(100);
   const [antiGravityActive, setAntiGravityActive] = useState<boolean>(false);
   const [antiGravityActiveSec, setAntiGravityActiveSec] = useState<number>(0);
-  const [magnetCooldown, setMagnetCooldown] = useState<number>(0);
+  const [magnetCharge, setMagnetCharge] = useState<number>(100);
   const [magnetActive, setMagnetActive] = useState<boolean>(false);
 
-  // Next & Current Fruits in React state for HUD badges
-  const [currentTier, setCurrentTier] = useState<number>(1);
-  const [nextTier, setNextTier] = useState<number>(1);
+  // Dropper, Next & Hold Basket Items in React state for HUD badges
+  const [currentItem, setCurrentItem] = useState<DropItem>({
+    tier: 1,
+    special: 'none',
+  });
+  const [nextItem, setNextItem] = useState<DropItem>({
+    tier: 1,
+    special: 'none',
+  });
+  const [heldItem, setHeldItem] = useState<DropItem | null>(null);
+  const [canSwapHold, setCanSwapHold] = useState<boolean>(true);
 
   const gameStateRef = useRef(gameState);
   gameStateRef.current = gameState;
+  const gameModeRef = useRef<GameMode>(gameMode);
+  gameModeRef.current = gameMode;
   const isMenuOpenRef = useRef(isMenuOpen);
   isMenuOpenRef.current = isMenuOpen;
   const isHowToPlayOpenRef = useRef(isHowToPlayOpen);
@@ -217,20 +302,35 @@ export default function App() {
   const isEndlessModeRef = useRef(isEndlessMode);
   isEndlessModeRef.current = isEndlessMode;
 
-  // Sync high score to localStorage
-  const updateScoreWithHighScore = useCallback((pointsToAdd: number) => {
-    setGameState((prev) => {
-      const newScore = prev.score + pointsToAdd;
-      setHighScore((prevBest) => {
-        const best = Math.max(prevBest, newScore);
-        try {
-          localStorage.setItem(HIGH_SCORE_STORAGE_KEY, best.toString());
-        } catch {}
-        return best;
+  // Sync high score & daily best to localStorage
+  const updateScoreWithHighScore = useCallback(
+    (pointsToAdd: number) => {
+      setGameState((prev) => {
+        const newScore = prev.score + pointsToAdd;
+        setHighScore((prevBest) => {
+          const best = Math.max(prevBest, newScore);
+          try {
+            localStorage.setItem(HIGH_SCORE_STORAGE_KEY, best.toString());
+          } catch {}
+          return best;
+        });
+        if (gameModeRef.current === 'DAILY') {
+          setDailyHighScore((prevDaily) => {
+            const bestDaily = Math.max(prevDaily, newScore);
+            try {
+              localStorage.setItem(
+                `${DAILY_HIGH_SCORE_PREFIX}${dailyInfo.seedKey}`,
+                bestDaily.toString(),
+              );
+            } catch {}
+            return bestDaily;
+          });
+        }
+        return {...prev, score: newScore};
       });
-      return {...prev, score: newScore};
-    });
-  }, []);
+    },
+    [dailyInfo.seedKey],
+  );
 
   // Sync SFX volume, persisted mute state & platform mute events
   useEffect(() => {
@@ -299,20 +399,26 @@ export default function App() {
   const isPointerDownRef = useRef<boolean>(false);
   const zeroGTapHandledRef = useRef<boolean>(false);
   const dangerTimerRef = useRef<number>(0);
-  const currentTierRef = useRef<number>(1);
-  const nextTierRef = useRef<number>(1);
+  const currentItemRef = useRef<DropItem>({tier: 1, special: 'none'});
+  const nextItemRef = useRef<DropItem>({tier: 1, special: 'none'});
+  const heldItemRef = useRef<DropItem | null>(null);
+  const canSwapHoldRef = useRef<boolean>(true);
+  const rngRef = useRef<() => number>(Math.random);
+  const dropsSinceSpecialRef = useRef<number>(0);
+  const pendingSpecialRewardRef = useRef<boolean>(false);
+  const comboRewardClaimedRef = useRef<boolean>(false);
   const totalDropsRef = useRef<number>(0);
-  const mergeQueueRef = useRef<
-    Array<{fruitA: FruitEntity; fruitB: FruitEntity; midX: number; midY: number}>
-  >([]);
+  const mergeQueueRef = useRef<MergeQueueEntry[]>([]);
 
-  // Combo & Screen Shake Refs
+  // Combo, Tension & Screen Shake Refs
   const comboCountRef = useRef<number>(0);
   const comboTimerRef = useRef<number>(0);
   const maxComboRef = useRef<number>(0);
   const totalMergesRef = useRef<number>(0);
   const highestTierRef = useRef<number>(1);
   const screenShakeRef = useRef<number>(0);
+  const tensionTierRef = useRef<0 | 1 | 2>(0);
+  const simmerDurationRef = useRef<number>(0);
 
   // Anti-Gravity & Magnet Physics Control Refs
   const antiGravityTimerRef = useRef<number>(0);
@@ -320,26 +426,84 @@ export default function App() {
   const dangerGraceCooldownRef = useRef<number>(0);
   const activeMagnetRef = useRef<ActiveMagnet | null>(null);
 
-  // Cooldown timers in seconds + last displayed integer guards (avoids 60Hz setState)
-  const antiGravityCdTimerRef = useRef<number>(0);
-  const magnetCdTimerRef = useRef<number>(0);
-  const lastDisplayedAgCdRef = useRef<number>(0);
+  // Merge-Charged Power-up Meters (0..100%) + integer display guards
+  const antiGravityChargeRef = useRef<number>(100);
+  const magnetChargeRef = useRef<number>(100);
+  const lastDisplayedAgChargeRef = useRef<number>(100);
   const lastDisplayedAgActiveSecRef = useRef<number>(0);
-  const lastDisplayedMagCdRef = useRef<number>(0);
+  const lastDisplayedMagChargeRef = useRef<number>(100);
 
-  // Weighted random dropper tier (Restricted to Tiers 1-5)
-  const getRandomSpawnTier = useCallback(() => {
+  // Helper to add merge/catalyst charge to Zero-G & Magnet meters
+  const addPowerupCharge = useCallback((agDelta: number, magDelta: number) => {
+    let playedReady = false;
+
+    if (antiGravityTimerRef.current <= 0 && antiGravityChargeRef.current < 100) {
+      const prevAg = antiGravityChargeRef.current;
+      const nextAg = Math.min(100, prevAg + agDelta);
+      antiGravityChargeRef.current = nextAg;
+      const nextAgInt = Math.floor(nextAg);
+      if (nextAgInt !== lastDisplayedAgChargeRef.current) {
+        lastDisplayedAgChargeRef.current = nextAgInt;
+        setAntiGravityCharge(nextAgInt);
+      }
+      if (prevAg < 100 && nextAg >= 100) {
+        playedReady = true;
+      }
+    }
+
+    if (!activeMagnetRef.current && magnetChargeRef.current < 100) {
+      const prevMag = magnetChargeRef.current;
+      const nextMag = Math.min(100, prevMag + magDelta);
+      magnetChargeRef.current = nextMag;
+      const nextMagInt = Math.floor(nextMag);
+      if (nextMagInt !== lastDisplayedMagChargeRef.current) {
+        lastDisplayedMagChargeRef.current = nextMagInt;
+        setMagnetCharge(nextMagInt);
+      }
+      if (prevMag < 100 && nextMag >= 100 && !playedReady) {
+        playedReady = true;
+      }
+    }
+
+    if (playedReady) {
+      gameAudio.playMeterReady();
+    }
+  }, []);
+
+  // Weighted random / seeded dropper item (Tiers 1-5 + Earned/Paced Special Drops)
+  const drawNextDropItem = useCallback((allowSpecial = true): DropItem => {
+    const cadence = Math.max(
+      6,
+      (getConfig('specialDropCadence') as number) || 20,
+    );
+    const alreadyQueuedSpecial =
+      currentItemRef.current.special !== 'none' ||
+      nextItemRef.current.special !== 'none';
+
+    if (
+      allowSpecial &&
+      !alreadyQueuedSpecial &&
+      (pendingSpecialRewardRef.current ||
+        dropsSinceSpecialRef.current >= cadence)
+    ) {
+      pendingSpecialRewardRef.current = false;
+      dropsSinceSpecialRef.current = 0;
+      const specialKind: SpecialDropKind =
+        rngRef.current() < 0.6 ? 'rainbow' : 'fizz';
+      return {tier: 1, special: specialKind};
+    }
+
     const maxTier = Math.min(5, (getConfig('maxSpawnTier') as number) || 5);
     const weights = [40, 30, 18, 9, 3]; // Cherry, Strawberry, Grape, Dekopon, Persimmon
     const totalWeight = weights
       .slice(0, maxTier)
       .reduce((a, b) => a + b, 0);
-    let rand = Math.random() * totalWeight;
+    let rand = rngRef.current() * totalWeight;
     for (let i = 0; i < maxTier; i++) {
-      if (rand < weights[i]) return i + 1;
+      if (rand < weights[i]) return {tier: i + 1, special: 'none'};
       rand -= weights[i];
     }
-    return 1;
+    return {tier: 1, special: 'none'};
   }, []);
 
   // Spawn Juice Particles
@@ -427,7 +591,7 @@ export default function App() {
     [],
   );
 
-  // Powerup 1: Activate Anti-Gravity
+  // Powerup 1: Activate Anti-Gravity (Consumes 100% Merge Charge)
   const activateAntiGravity = useCallback(() => {
     if (gameStateRef.current.status !== 'PLAYING') return;
     if (
@@ -437,17 +601,19 @@ export default function App() {
     ) {
       return;
     }
-    if (antiGravityTimerRef.current > 0 || antiGravityCdTimerRef.current > 0) return;
+    if (antiGravityTimerRef.current > 0 || antiGravityChargeRef.current < 100) {
+      return;
+    }
     if (!engineRef.current) return;
 
     gameAudio.playPowerupChime();
     antiGravityTimerRef.current = 5.0; // 5 seconds duration
-    antiGravityCdTimerRef.current = 15.0; // 15s cooldown
+    antiGravityChargeRef.current = 0;
     lastDisplayedAgActiveSecRef.current = 5;
-    lastDisplayedAgCdRef.current = 15;
+    lastDisplayedAgChargeRef.current = 0;
     setAntiGravityActive(true);
     setAntiGravityActiveSec(5);
-    setAntiGravityCooldown(15);
+    setAntiGravityCharge(0);
 
     // Create temporary static horizontal ceiling rigid body at y = 95
     const ceilingY = 95;
@@ -466,7 +632,7 @@ export default function App() {
     spawnScorePopup(canvasWidth / 2, 220, '🌀 ZERO-G ACTIVATED!', '#A855F7');
   }, [canvasWidth, jarWidth, spawnScorePopup, spawnZeroGParticles]);
 
-  // Powerup 2: Activate Magnet
+  // Powerup 2: Activate Magnet (Consumes 100% Merge Charge when a pair exists)
   const activateMagnet = useCallback(() => {
     if (gameStateRef.current.status !== 'PLAYING') return;
     if (
@@ -476,13 +642,13 @@ export default function App() {
     ) {
       return;
     }
-    if (activeMagnetRef.current || magnetCdTimerRef.current > 0) return;
+    if (activeMagnetRef.current || magnetChargeRef.current < 100) return;
     if (!engineRef.current) return;
 
-    // Scan all fruits inside the jar and find matching pairs
+    // Scan normal fruits inside the jar and find matching pairs
     const tierMap = new Map<number, FruitEntity[]>();
     fruitsRef.current.forEach((fruit) => {
-      if (!fruit.merged) {
+      if (!fruit.merged && fruit.special === 'none') {
         const list = tierMap.get(fruit.tier) || [];
         list.push(fruit);
         tierMap.set(fruit.tier, list);
@@ -500,7 +666,7 @@ export default function App() {
     }
 
     if (bestTier === -1) {
-      // No pairs found
+      // No pairs found — preserve charge!
       gameAudio.playErrorBuzz();
       spawnScorePopup(canvasWidth / 2, 350, 'No matching pairs found!', '#EF4444');
       return;
@@ -534,9 +700,9 @@ export default function App() {
       totalSeconds: 2.2,
     };
 
-    magnetCdTimerRef.current = 12.0; // 12s cooldown
-    lastDisplayedMagCdRef.current = 12;
-    setMagnetCooldown(12);
+    magnetChargeRef.current = 0;
+    lastDisplayedMagChargeRef.current = 0;
+    setMagnetCharge(0);
     setMagnetActive(true);
 
     gameAudio.playArcadeLaser();
@@ -549,7 +715,48 @@ export default function App() {
     );
   }, [canvasWidth, spawnScorePopup]);
 
-  // Drop current fruit into jar
+  // Tactical 1-Slot Hold / Swap Basket (once per drop)
+  const swapHoldFruit = useCallback(() => {
+    if (gameStateRef.current.status !== 'PLAYING') return;
+    if (
+      isMenuOpenRef.current ||
+      isHowToPlayOpenRef.current ||
+      isEvolutionTreeOpenRef.current
+    ) {
+      return;
+    }
+    if (!canSwapHoldRef.current) {
+      gameAudio.playErrorBuzz();
+      return;
+    }
+
+    gameAudio.resume();
+    gameAudio.playBasketSwap();
+
+    if (heldItemRef.current === null) {
+      const stashed = currentItemRef.current;
+      const promoted = nextItemRef.current;
+      heldItemRef.current = stashed;
+      currentItemRef.current = promoted;
+      const upcoming = drawNextDropItem(true);
+      nextItemRef.current = upcoming;
+      setHeldItem(stashed);
+      setCurrentItem(promoted);
+      setNextItem(upcoming);
+    } else {
+      const prevHeld = heldItemRef.current;
+      const prevCurrent = currentItemRef.current;
+      heldItemRef.current = prevCurrent;
+      currentItemRef.current = prevHeld;
+      setHeldItem(prevCurrent);
+      setCurrentItem(prevHeld);
+    }
+
+    canSwapHoldRef.current = false;
+    setCanSwapHold(false);
+  }, [drawNextDropItem]);
+
+  // Drop current fruit or special item into jar
   const dropFruit = useCallback(() => {
     if (gameStateRef.current.status !== 'PLAYING') return;
     if (
@@ -567,10 +774,8 @@ export default function App() {
 
     gameAudio.resume();
 
-    const droppedTier = currentTierRef.current;
-    const tierIndex = droppedTier - 1;
-    const tierConfig = FRUIT_TIERS[tierIndex] || FRUIT_TIERS[0];
-    const radius = tierConfig.radius;
+    const droppedItem = currentItemRef.current;
+    const {radius, tierConfig} = getDropItemDetails(droppedItem);
 
     // Clamp drop position strictly within jar walls
     const dropX = Math.max(
@@ -579,9 +784,14 @@ export default function App() {
     );
     const dropY = dropperY;
 
-    const restitution = (getConfig('fruitRestitution') as number) || 0.22;
+    const restitution =
+      droppedItem.special === 'fizz'
+        ? 0.36
+        : (getConfig('fruitRestitution') as number) || 0.22;
     const friction =
-      tierConfig.friction ?? ((getConfig('fruitFriction') as number) || 0.08);
+      droppedItem.special !== 'none'
+        ? 0.05
+        : (tierConfig.friction ?? ((getConfig('fruitFriction') as number) || 0.08));
     const densityScale =
       tierConfig.density ??
       ((getConfig('fruitDensityMultiplier') as number) || 0.002);
@@ -589,7 +799,9 @@ export default function App() {
     const body = Matter.Bodies.circle(dropX, dropY, radius, {
       restitution,
       friction,
-      density: densityScale * (1 + droppedTier * 0.15),
+      density:
+        densityScale *
+        (1 + (droppedItem.special !== 'none' ? 2.5 : droppedItem.tier) * 0.15),
       label: 'fruit',
       angularVelocity: (Math.random() - 0.5) * 0.05,
     });
@@ -598,7 +810,8 @@ export default function App() {
 
     const entity: FruitEntity = {
       id: `fruit_${body.id}`,
-      tier: droppedTier,
+      tier: droppedItem.tier,
+      special: droppedItem.special,
       body,
       spawnTime: now,
       renderScale: 0.85,
@@ -618,27 +831,35 @@ export default function App() {
     fruitsRef.current.set(body.id, entity);
     gameAudio.playCrispClick();
 
-    if (droppedTier > highestTierRef.current) {
-      highestTierRef.current = droppedTier;
-      setHighestTier(droppedTier);
+    if (
+      droppedItem.special === 'none' &&
+      droppedItem.tier > highestTierRef.current
+    ) {
+      highestTierRef.current = droppedItem.tier;
+      setHighestTier(droppedItem.tier);
     }
 
-    // Increment drop count
+    // Increment drop counters & unlock Hold swap for the new turn
     totalDropsRef.current += 1;
+    if (droppedItem.special === 'none') {
+      dropsSinceSpecialRef.current += 1;
+    }
     setTotalDrops((prev) => prev + 1);
+    canSwapHoldRef.current = true;
+    setCanSwapHold(true);
 
-    // Advance queue (Restricted to Tiers 1-5)
-    const nextT = nextTierRef.current;
-    const newUpcoming = getRandomSpawnTier();
-    currentTierRef.current = nextT;
-    nextTierRef.current = newUpcoming;
-    setCurrentTier(nextT);
-    setNextTier(newUpcoming);
+    // Advance queue
+    const promotedNext = nextItemRef.current;
+    currentItemRef.current = promotedNext;
+    const newUpcoming = drawNextDropItem(true);
+    nextItemRef.current = newUpcoming;
+    setCurrentItem(promotedNext);
+    setNextItem(newUpcoming);
 
     lastDropTimeRef.current = now;
-  }, [dropperY, jarRight, jarX, getRandomSpawnTier]);
+  }, [dropperY, jarRight, jarX, drawNextDropItem]);
 
-  // Direct keyboard listener for instant dropping and powerup shortcuts
+  // Direct keyboard listener for instant dropping, Hold swap, and powerup shortcuts
   useEffect(() => {
     const handleDirectKeyDown = (e: KeyboardEvent) => {
       if (gameStateRef.current.status !== 'PLAYING') return;
@@ -662,6 +883,10 @@ export default function App() {
         if (e.repeat) return;
         if (performance.now() - sessionPlayStartRef.current <= 180) return;
         dropFruit();
+      } else if (e.key === 'c' || e.key === 'C' || e.key === 'Shift') {
+        e.preventDefault();
+        if (e.repeat) return;
+        swapHoldFruit();
       } else if (e.key === 'z' || e.key === 'Z' || e.key === '1') {
         if (e.repeat) return;
         activateAntiGravity();
@@ -673,7 +898,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleDirectKeyDown, {passive: false});
     return () => window.removeEventListener('keydown', handleDirectKeyDown);
-  }, [dropFruit, activateAntiGravity, activateMagnet]);
+  }, [dropFruit, swapHoldFruit, activateAntiGravity, activateMagnet]);
 
   // Continue seamlessly in Endless Mode after crowning / merging King Durians
   const resumeEndlessMode = useCallback(() => {
@@ -686,206 +911,301 @@ export default function App() {
     gameAudio.playPowerupChime();
   }, []);
 
-  // Initialize/Reset Game Session
-  const initGame = useCallback(() => {
-    // Clear existing physics
-    if (engineRef.current) {
-      Matter.World.clear(engineRef.current.world, false);
-      Matter.Engine.clear(engineRef.current);
-    }
+  // Initialize/Reset Game Session (supports 'CLASSIC' or date-seeded 'DAILY')
+  const initGame = useCallback(
+    (requestedMode?: GameMode | unknown) => {
+      const activeMode: GameMode =
+        requestedMode === 'DAILY' || requestedMode === 'CLASSIC'
+          ? requestedMode
+          : gameModeRef.current;
 
-    const gravityY = (getConfig('gravityY') as number) || 1.5;
-    const engine = Matter.Engine.create({
-      gravity: {x: 0, y: gravityY, scale: 0.0012},
-    });
+      gameModeRef.current = activeMode;
+      setGameMode(activeMode);
+      setScorecardCopied(false);
 
-    const world = engine.world;
-    const wallThickness = 60;
-    const wallTopY = 60;
-    const wallBottomY = jarBottom + wallThickness;
-    const wallHeight = wallBottomY - wallTopY;
-    const wallCenterY = (wallTopY + wallBottomY) / 2;
+      rngRef.current =
+        activeMode === 'DAILY'
+          ? createSeededRng(`juicydrop-daily-${dailyInfo.seedKey}`)
+          : Math.random;
 
-    // Jar Boundaries (Left, Right extended up to y=60 for Zero-G enclosure, Bottom)
-    const ground = Matter.Bodies.rectangle(
-      canvasWidth / 2,
-      jarBottom + wallThickness / 2,
-      jarWidth + wallThickness * 2,
-      wallThickness,
-      {isStatic: true, label: 'ground', friction: 0.2, restitution: 0.1},
-    );
-
-    const leftWall = Matter.Bodies.rectangle(
-      jarX - wallThickness / 2,
-      wallCenterY,
-      wallThickness,
-      wallHeight,
-      {isStatic: true, label: 'wall', friction: 0.1, restitution: 0.1},
-    );
-
-    const rightWall = Matter.Bodies.rectangle(
-      jarRight + wallThickness / 2,
-      wallCenterY,
-      wallThickness,
-      wallHeight,
-      {isStatic: true, label: 'wall', friction: 0.1, restitution: 0.1},
-    );
-
-    Matter.Composite.add(world, [ground, leftWall, rightWall]);
-
-    // Collision listener for fruit merging & tactile squash-and-stretch bounces
-    Matter.Events.on(engine, 'collisionStart', (event) => {
-      const pairs = event.pairs;
-      const nowCollision = performance.now();
-
-      for (let i = 0; i < pairs.length; i++) {
-        const pair = pairs[i];
-        const bodyA = pair.bodyA;
-        const bodyB = pair.bodyB;
-
-        if (bodyA.label === 'fruit' && bodyB.label === 'fruit') {
-          const fruitA = fruitsRef.current.get(bodyA.id);
-          const fruitB = fruitsRef.current.get(bodyB.id);
-
-          if (
-            fruitA &&
-            fruitB &&
-            fruitA.tier === fruitB.tier &&
-            !fruitA.merged &&
-            !fruitB.merged &&
-            fruitA.body.id !== fruitB.body.id
-          ) {
-            fruitA.merged = true;
-            fruitB.merged = true;
-
-            const midX = (bodyA.position.x + bodyB.position.x) / 2;
-            const midY = (bodyA.position.y + bodyB.position.y) / 2;
-
-            mergeQueueRef.current.push({
-              fruitA,
-              fruitB,
-              midX,
-              midY,
-            });
-            continue;
-          }
-        }
-
-        // Non-merge collision: tactile squash-and-stretch + soft thud SFX
-        const dvx = bodyA.velocity.x - bodyB.velocity.x;
-        const dvy = bodyA.velocity.y - bodyB.velocity.y;
-        const impactSpeed = Math.hypot(dvx, dvy);
-
-        if (impactSpeed > 1.8) {
-          const nx = pair.collision?.normal
-            ? Math.abs(pair.collision.normal.x)
-            : Math.abs(dvx);
-          const ny = pair.collision?.normal
-            ? Math.abs(pair.collision.normal.y)
-            : Math.abs(dvy);
-          const isVerticalImpact = ny >= nx;
-          const impulse = Math.min(6.2, (impactSpeed - 1.8) * 0.9);
-          let soundPlayed = false;
-
-          const applyBounceSquash = (fruit: FruitEntity | undefined) => {
-            if (!fruit || fruit.merged) return;
-            if (nowCollision - fruit.lastImpactTime <= 85) return;
-            fruit.lastImpactTime = nowCollision;
-
-            if (isVerticalImpact) {
-              fruit.squashVelX += impulse;
-              fruit.squashVelY -= impulse;
-            } else {
-              fruit.squashVelX -= impulse;
-              fruit.squashVelY += impulse;
-            }
-
-            if (!soundPlayed && impactSpeed > 2.6) {
-              soundPlayed = true;
-              gameAudio.playSoftBounce(
-                Math.min(1, (impactSpeed - 1.8) / 8),
-                fruit.tier,
-              );
-            }
-          };
-
-          if (bodyA.label === 'fruit') {
-            applyBounceSquash(fruitsRef.current.get(bodyA.id));
-          }
-          if (bodyB.label === 'fruit') {
-            applyBounceSquash(fruitsRef.current.get(bodyB.id));
-          }
-        }
+      // Clear existing physics
+      if (engineRef.current) {
+        Matter.World.clear(engineRef.current.world, false);
+        Matter.Engine.clear(engineRef.current);
       }
-    });
 
-    const startNow = performance.now();
-    engineRef.current = engine;
-    fruitsRef.current.clear();
-    particlesRef.current = [];
-    scorePopupsRef.current = [];
-    shockwavesRef.current = [];
-    mergeQueueRef.current = [];
-    dangerTimerRef.current = 0;
-    dangerGraceCooldownRef.current = 0;
-    antiGravityTimerRef.current = 0;
-    antiGravityCdTimerRef.current = 0;
-    magnetCdTimerRef.current = 0;
-    lastDisplayedAgCdRef.current = 0;
-    lastDisplayedAgActiveSecRef.current = 0;
-    lastDisplayedMagCdRef.current = 0;
-    antiGravityCeilingRef.current = null;
-    activeMagnetRef.current = null;
-    totalDropsRef.current = 0;
-    comboCountRef.current = 0;
-    comboTimerRef.current = 0;
-    maxComboRef.current = 0;
-    totalMergesRef.current = 0;
-    highestTierRef.current = 1;
-    screenShakeRef.current = 0;
-    isEndlessModeRef.current = false;
-    zeroGTapHandledRef.current = false;
-    isPointerDownRef.current = false;
-    sessionPlayStartRef.current = startNow;
-    lastDropTimeRef.current = startNow - 600;
+      const gravityY = (getConfig('gravityY') as number) || 1.5;
+      const engine = Matter.Engine.create({
+        gravity: {x: 0, y: gravityY, scale: 0.0012},
+      });
 
-    setTotalDrops(0);
-    setIsEndlessMode(false);
-    setMaxCombo(0);
-    setTotalMerges(0);
-    setHighestTier(1);
-    setAntiGravityActive(false);
-    setAntiGravityActiveSec(0);
-    setAntiGravityCooldown(0);
-    setMagnetActive(false);
-    setMagnetCooldown(0);
+      const world = engine.world;
+      const wallThickness = 60;
+      const wallTopY = 60;
+      const wallBottomY = jarBottom + wallThickness;
+      const wallHeight = wallBottomY - wallTopY;
+      const wallCenterY = (wallTopY + wallBottomY) / 2;
 
-    const t1 = getRandomSpawnTier();
-    const t2 = getRandomSpawnTier();
-    currentTierRef.current = t1;
-    nextTierRef.current = t2;
-    setCurrentTier(t1);
-    setNextTier(t2);
+      // Jar Boundaries (Left, Right extended up to y=60 for Zero-G enclosure, Bottom)
+      const ground = Matter.Bodies.rectangle(
+        canvasWidth / 2,
+        jarBottom + wallThickness / 2,
+        jarWidth + wallThickness * 2,
+        wallThickness,
+        {isStatic: true, label: 'ground', friction: 0.2, restitution: 0.1},
+      );
 
-    dropperXRef.current = canvasWidth / 2;
-    targetDropperXRef.current = canvasWidth / 2;
+      const leftWall = Matter.Bodies.rectangle(
+        jarX - wallThickness / 2,
+        wallCenterY,
+        wallThickness,
+        wallHeight,
+        {isStatic: true, label: 'wall', friction: 0.1, restitution: 0.1},
+      );
 
-    setGameState({
-      status: 'PLAYING',
-      score: 0,
-      level: 1,
-    });
-    setIsMenuOpen(false);
-    setIsHowToPlayOpen(false);
-    setIsEvolutionTreeOpen(false);
+      const rightWall = Matter.Bodies.rectangle(
+        jarRight + wallThickness / 2,
+        wallCenterY,
+        wallThickness,
+        wallHeight,
+        {isStatic: true, label: 'wall', friction: 0.1, restitution: 0.1},
+      );
 
-    // Ensure audio context unlocks cleanly
-    gameAudio.resume();
+      Matter.Composite.add(world, [ground, leftWall, rightWall]);
 
-    if (sdk) {
-      sdk.startGame();
-    }
-  }, [canvasWidth, jarBottom, jarRight, jarWidth, jarX, getRandomSpawnTier, sdk]);
+      // Collision listener for fruit merging, special drops & tactile bounces
+      Matter.Events.on(engine, 'collisionStart', (event) => {
+        const pairs = event.pairs;
+        const nowCollision = performance.now();
+        const rainbowMaxTier =
+          (getConfig('rainbowMaxTargetTier') as number) || 9;
+
+        for (let i = 0; i < pairs.length; i++) {
+          const pair = pairs[i];
+          const bodyA = pair.bodyA;
+          const bodyB = pair.bodyB;
+
+          if (bodyA.label === 'fruit' && bodyB.label === 'fruit') {
+            const fruitA = fruitsRef.current.get(bodyA.id);
+            const fruitB = fruitsRef.current.get(bodyB.id);
+
+            if (
+              fruitA &&
+              fruitB &&
+              !fruitA.merged &&
+              !fruitB.merged &&
+              fruitA.body.id !== fruitB.body.id
+            ) {
+              const midX = (bodyA.position.x + bodyB.position.x) / 2;
+              const midY = (bodyA.position.y + bodyB.position.y) / 2;
+
+              // 1. Standard matching normal fruit merge
+              if (
+                fruitA.special === 'none' &&
+                fruitB.special === 'none' &&
+                fruitA.tier === fruitB.tier
+              ) {
+                fruitA.merged = true;
+                fruitB.merged = true;
+                mergeQueueRef.current.push({
+                  fruitA,
+                  fruitB,
+                  midX,
+                  midY,
+                  kind: 'normal',
+                });
+                continue;
+              }
+
+              // 2. Rainbow Dewdrop wildcard contact
+              if (fruitA.special === 'rainbow' || fruitB.special === 'rainbow') {
+                const rainbowFruit =
+                  fruitA.special === 'rainbow' ? fruitA : fruitB;
+                const otherFruit =
+                  fruitA.special === 'rainbow' ? fruitB : fruitA;
+
+                if (otherFruit.special === 'fizz') {
+                  rainbowFruit.merged = true;
+                  otherFruit.merged = true;
+                  mergeQueueRef.current.push({
+                    fruitA: rainbowFruit,
+                    fruitB: otherFruit,
+                    midX,
+                    midY,
+                    kind: 'fizz_pair',
+                  });
+                  continue;
+                }
+
+                rainbowFruit.merged = true;
+                if (
+                  otherFruit.special === 'rainbow' ||
+                  otherFruit.tier <= rainbowMaxTier
+                ) {
+                  otherFruit.merged = true;
+                }
+                mergeQueueRef.current.push({
+                  fruitA: rainbowFruit,
+                  fruitB: otherFruit,
+                  midX,
+                  midY,
+                  kind: 'rainbow',
+                });
+                continue;
+              }
+
+              // 3. Twin Fizz Berries touching each other -> instant double fizz detonation!
+              if (fruitA.special === 'fizz' && fruitB.special === 'fizz') {
+                fruitA.merged = true;
+                fruitB.merged = true;
+                mergeQueueRef.current.push({
+                  fruitA,
+                  fruitB,
+                  midX,
+                  midY,
+                  kind: 'fizz_pair',
+                });
+                continue;
+              }
+            }
+          }
+
+          // Non-merge collision: tactile squash-and-stretch + soft thud SFX
+          const dvx = bodyA.velocity.x - bodyB.velocity.x;
+          const dvy = bodyA.velocity.y - bodyB.velocity.y;
+          const impactSpeed = Math.hypot(dvx, dvy);
+
+          if (impactSpeed > 1.8) {
+            const nx = pair.collision?.normal
+              ? Math.abs(pair.collision.normal.x)
+              : Math.abs(dvx);
+            const ny = pair.collision?.normal
+              ? Math.abs(pair.collision.normal.y)
+              : Math.abs(dvy);
+            const isVerticalImpact = ny >= nx;
+            const impulse = Math.min(6.2, (impactSpeed - 1.8) * 0.9);
+            let soundPlayed = false;
+
+            const applyBounceSquash = (fruit: FruitEntity | undefined) => {
+              if (!fruit || fruit.merged) return;
+              if (nowCollision - fruit.lastImpactTime <= 85) return;
+              fruit.lastImpactTime = nowCollision;
+
+              if (isVerticalImpact) {
+                fruit.squashVelX += impulse;
+                fruit.squashVelY -= impulse;
+              } else {
+                fruit.squashVelX -= impulse;
+                fruit.squashVelY += impulse;
+              }
+
+              if (!soundPlayed && impactSpeed > 2.6) {
+                soundPlayed = true;
+                gameAudio.playSoftBounce(
+                  Math.min(1, (impactSpeed - 1.8) / 8),
+                  fruit.tier,
+                );
+              }
+            };
+
+            if (bodyA.label === 'fruit') {
+              applyBounceSquash(fruitsRef.current.get(bodyA.id));
+            }
+            if (bodyB.label === 'fruit') {
+              applyBounceSquash(fruitsRef.current.get(bodyB.id));
+            }
+          }
+        }
+      });
+
+      const startNow = performance.now();
+      engineRef.current = engine;
+      fruitsRef.current.clear();
+      particlesRef.current = [];
+      scorePopupsRef.current = [];
+      shockwavesRef.current = [];
+      mergeQueueRef.current = [];
+      dangerTimerRef.current = 0;
+      dangerGraceCooldownRef.current = 0;
+      antiGravityTimerRef.current = 0;
+      antiGravityChargeRef.current = 100;
+      magnetChargeRef.current = 100;
+      lastDisplayedAgChargeRef.current = 100;
+      lastDisplayedAgActiveSecRef.current = 0;
+      lastDisplayedMagChargeRef.current = 100;
+      antiGravityCeilingRef.current = null;
+      activeMagnetRef.current = null;
+      totalDropsRef.current = 0;
+      dropsSinceSpecialRef.current = 0;
+      pendingSpecialRewardRef.current = false;
+      comboRewardClaimedRef.current = false;
+      comboCountRef.current = 0;
+      comboTimerRef.current = 0;
+      maxComboRef.current = 0;
+      totalMergesRef.current = 0;
+      highestTierRef.current = 1;
+      screenShakeRef.current = 0;
+      tensionTierRef.current = 0;
+      simmerDurationRef.current = 0;
+      isEndlessModeRef.current = false;
+      zeroGTapHandledRef.current = false;
+      isPointerDownRef.current = false;
+      heldItemRef.current = null;
+      canSwapHoldRef.current = true;
+      sessionPlayStartRef.current = startNow;
+      lastDropTimeRef.current = startNow - 600;
+
+      setTotalDrops(0);
+      setIsEndlessMode(false);
+      setMaxCombo(0);
+      setTotalMerges(0);
+      setHighestTier(1);
+      setMusicTensionTier(0);
+      setAntiGravityActive(false);
+      setAntiGravityActiveSec(0);
+      setAntiGravityCharge(100);
+      setMagnetActive(false);
+      setMagnetCharge(100);
+      setHeldItem(null);
+      setCanSwapHold(true);
+
+      const item1 = drawNextDropItem(false);
+      const item2 = drawNextDropItem(false);
+      currentItemRef.current = item1;
+      nextItemRef.current = item2;
+      setCurrentItem(item1);
+      setNextItem(item2);
+
+      dropperXRef.current = canvasWidth / 2;
+      targetDropperXRef.current = canvasWidth / 2;
+
+      setGameState({
+        status: 'PLAYING',
+        score: 0,
+        level: 1,
+      });
+      setIsMenuOpen(false);
+      setIsHowToPlayOpen(false);
+      setIsEvolutionTreeOpen(false);
+
+      // Ensure audio context unlocks cleanly
+      gameAudio.resume();
+
+      if (sdk) {
+        sdk.startGame();
+      }
+    },
+    [
+      canvasWidth,
+      dailyInfo.seedKey,
+      drawNextDropItem,
+      jarBottom,
+      jarRight,
+      jarWidth,
+      jarX,
+      sdk,
+    ],
+  );
 
   // Lifecycle & Score Reporting
   usePlaygroundGameLifecycle(gameState, sdk);
@@ -918,8 +1238,8 @@ export default function App() {
     // Check if player clicked directly on any existing fruit inside the container
     let clickedFruit: FruitEntity | null = null;
     fruitsRef.current.forEach((fruit) => {
-      if (fruit.merged) return;
-      const radius = FRUIT_TIERS[fruit.tier - 1]?.radius || 30;
+      if (fruit.merged || fruit.special !== 'none') return;
+      const radius = getFruitEntityRadius(fruit);
       const dx = fruit.body.position.x - tapX;
       const dy = fruit.body.position.y - tapY;
       if (Math.hypot(dx, dy) <= radius + 10) {
@@ -933,7 +1253,12 @@ export default function App() {
       let nearestTwin: FruitEntity | null = null;
       let minDist = Infinity;
       fruitsRef.current.forEach((other) => {
-        if (other.body.id !== f.body.id && other.tier === f.tier && !other.merged) {
+        if (
+          other.body.id !== f.body.id &&
+          other.special === 'none' &&
+          other.tier === f.tier &&
+          !other.merged
+        ) {
           const d = Math.hypot(
             other.body.position.x - f.body.position.x,
             other.body.position.y - f.body.position.y,
@@ -1068,36 +1393,12 @@ export default function App() {
     const now = performance.now();
     const defaultGravity = (getConfig('gravityY') as number) || 1.5;
 
-    // 0. Update Cooldowns and Anti-Gravity / Magnet Timers (integer-guarded setState)
-    if (antiGravityCdTimerRef.current > 0) {
-      antiGravityCdTimerRef.current = Math.max(
-        0,
-        antiGravityCdTimerRef.current - deltaTime,
-      );
-      const nextInt = Math.ceil(antiGravityCdTimerRef.current);
-      if (nextInt !== lastDisplayedAgCdRef.current) {
-        lastDisplayedAgCdRef.current = nextInt;
-        setAntiGravityCooldown(nextInt);
-      }
-    }
-
-    if (magnetCdTimerRef.current > 0) {
-      magnetCdTimerRef.current = Math.max(
-        0,
-        magnetCdTimerRef.current - deltaTime,
-      );
-      const nextMagInt = Math.ceil(magnetCdTimerRef.current);
-      if (nextMagInt !== lastDisplayedMagCdRef.current) {
-        lastDisplayedMagCdRef.current = nextMagInt;
-        setMagnetCooldown(nextMagInt);
-      }
-    }
-
-    // Decay Combo Timer & Screen Shake
+    // 0. Decay Combo Timer & Screen Shake (Power-ups now recharge strictly via merges!)
     if (comboTimerRef.current > 0) {
       comboTimerRef.current = Math.max(0, comboTimerRef.current - deltaTime);
       if (comboTimerRef.current <= 0) {
         comboCountRef.current = 0;
+        comboRewardClaimedRef.current = false;
       }
     }
 
@@ -1265,10 +1566,9 @@ export default function App() {
     }
 
     // Smooth lerp dropper position
-    const currentTierRadius =
-      FRUIT_TIERS[currentTierRef.current - 1]?.radius || 22;
-    const minDropperX = jarX + currentTierRadius + 6;
-    const maxDropperX = jarRight - currentTierRadius - 6;
+    const currentItemRadius = getDropItemDetails(currentItemRef.current).radius;
+    const minDropperX = jarX + currentItemRadius + 6;
+    const maxDropperX = jarRight - currentItemRadius - 6;
     targetDropperXRef.current = Math.max(
       minDropperX,
       Math.min(maxDropperX, targetDropperXRef.current),
@@ -1282,18 +1582,98 @@ export default function App() {
       Matter.Engine.update(engineRef.current, deltaTime * 1000);
     }
 
-    // 3. Process Merges with Race Condition Guard + Combo System
+    // Helper to detonate a Fizz Berry catalyst (pops nearby Tier 1-2 clutter + boosts meters)
+    const detonateFizzAt = (
+      world: Matter.World,
+      cx: number,
+      cy: number,
+      comboMult: number,
+    ) => {
+      gameAudio.playFizzPop();
+      spawnShockwave(cx, cy, 195, '#06B6D4', 6);
+      spawnShockwave(cx, cy, 130, '#A3E635', 4);
+      spawnJuiceSplash(cx, cy, '#22D3EE', 28, true);
+      screenShakeRef.current = Math.max(screenShakeRef.current, 5.5);
+
+      // Find up to 3 closest unmerged Tier 1-2 clutter fruits within 220px
+      const smallCandidates: Array<{fruit: FruitEntity; dist: number}> = [];
+      fruitsRef.current.forEach((cand) => {
+        if (cand.merged || cand.special !== 'none' || cand.tier > 2) return;
+        const d = Math.hypot(
+          cand.body.position.x - cx,
+          cand.body.position.y - cy,
+        );
+        if (d <= 220) {
+          smallCandidates.push({fruit: cand, dist: d});
+        }
+      });
+      smallCandidates.sort((a, b) => a.dist - b.dist);
+      const popped = smallCandidates.slice(0, 3);
+      let bonusPts = Math.round(60 * comboMult);
+
+      popped.forEach(({fruit: target}) => {
+        target.merged = true;
+        const tx = target.body.position.x;
+        const ty = target.body.position.y;
+        const tConf = FRUIT_TIERS[target.tier - 1] || FRUIT_TIERS[0];
+        Matter.Composite.remove(world, target.body);
+        fruitsRef.current.delete(target.body.id);
+        spawnJuiceSplash(tx, ty, tConf.color, 14, true);
+        bonusPts += Math.round(tConf.points * 2 * comboMult);
+      });
+
+      // Fizzy buoyant nudge on nearby remaining fruits
+      fruitsRef.current.forEach((other) => {
+        if (other.merged) return;
+        const ox = other.body.position.x - cx;
+        const oy = other.body.position.y - cy;
+        const od = Math.hypot(ox, oy);
+        if (od > 1 && od < 250) {
+          const falloff = 1 - od / 250;
+          const push = 0.0028 * falloff * other.body.mass;
+          Matter.Body.applyForce(other.body, other.body.position, {
+            x: (ox / od) * push,
+            y: (oy / od) * push - 0.0012 * falloff * other.body.mass,
+          });
+          other.expression = 'bouncy';
+          other.expressionTimer = 0.9;
+        }
+      });
+
+      addPowerupCharge(20, 20);
+      spawnScorePopup(
+        cx,
+        cy,
+        popped.length > 0
+          ? `🫧 FIZZ POP x${popped.length}! +${bonusPts}`
+          : `🫧 FIZZ BOOST! +${bonusPts}`,
+        '#06B6D4',
+        25,
+        0.65,
+      );
+      updateScoreWithHighScore(bonusPts);
+    };
+
+    // 3. Process Merges with Race Condition Guard, Special Drops, Charge Meters & Combos
     if (mergeQueueRef.current.length > 0 && engineRef.current) {
       const world = engineRef.current.world;
       const mergesToProcess = [...mergeQueueRef.current];
       mergeQueueRef.current = [];
       const processedBodyIds = new Set<number>();
+      const mergeBlastCenters: Array<{x: number; y: number; r: number}> = [];
+      const rainbowMaxTier =
+        (getConfig('rainbowMaxTargetTier') as number) || 9;
+      const specialComboReq =
+        (getConfig('specialComboTrigger') as number) || 4;
+      const agBase = (getConfig('zeroGChargeBase') as number) || 10;
+      const magBase = (getConfig('magnetChargeBase') as number) || 14;
+      const comboChargeMult =
+        (getConfig('comboChargeMultiplier') as number) || 1.75;
 
-      mergesToProcess.forEach(({fruitA, fruitB, midX, midY}) => {
+      mergesToProcess.forEach(({fruitA, fruitB, midX, midY, kind}) => {
         const idA = fruitA.body.id;
         const idB = fruitB.body.id;
 
-        // Ensure neither body has already been merged/removed in this frame
         if (processedBodyIds.has(idA) || processedBodyIds.has(idB)) {
           return;
         }
@@ -1301,10 +1681,73 @@ export default function App() {
           return;
         }
 
+        // Special Case A: Twin Fizz Berries (or Rainbow + Fizz) colliding
+        if (kind === 'fizz_pair') {
+          processedBodyIds.add(idA);
+          processedBodyIds.add(idB);
+          Matter.Composite.remove(world, fruitA.body);
+          Matter.Composite.remove(world, fruitB.body);
+          fruitsRef.current.delete(idA);
+          fruitsRef.current.delete(idB);
+          const comboMult = Math.min(
+            3.0,
+            1 + Math.max(0, comboCountRef.current - 1) * 0.25,
+          );
+          detonateFizzAt(world, midX, midY, comboMult);
+          mergeBlastCenters.push({x: midX, y: midY, r: 45});
+          return;
+        }
+
+        // Special Case B: Rainbow Dewdrop touching Tier 10-13 endgame fruit (Prismatic Bonus, keeps big fruit safe!)
+        if (
+          kind === 'rainbow' &&
+          fruitB.special === 'none' &&
+          fruitB.tier > rainbowMaxTier
+        ) {
+          processedBodyIds.add(idA);
+          Matter.Composite.remove(world, fruitA.body);
+          fruitsRef.current.delete(idA);
+
+          const comboMult = Math.min(
+            3.0,
+            1 + Math.max(0, comboCountRef.current - 1) * 0.25,
+          );
+          const prismaticBonus = Math.round(250 * comboMult);
+          gameAudio.playWildcardShimmer();
+          spawnShockwave(midX, midY, 150, '#EC4899', 5);
+          spawnJuiceSplash(midX, midY, '#F472B6', 28, true);
+
+          fruitB.squashX = 1.24;
+          fruitB.squashY = 0.78;
+          fruitB.expression = 'starry';
+          fruitB.expressionTimer = 1.2;
+          Matter.Body.applyForce(fruitB.body, fruitB.body.position, {
+            x: 0,
+            y: -0.002 * fruitB.body.mass,
+          });
+
+          addPowerupCharge(16, 20);
+          spawnScorePopup(
+            midX,
+            midY,
+            `🌈 +${prismaticBonus} PRISMATIC BONUS!`,
+            '#EC4899',
+            25,
+            0.65,
+          );
+          updateScoreWithHighScore(prismaticBonus);
+          mergeBlastCenters.push({
+            x: midX,
+            y: midY,
+            r: getFruitEntityRadius(fruitB),
+          });
+          return;
+        }
+
         processedBodyIds.add(idA);
         processedBodyIds.add(idB);
 
-        // Remove old bodies from physics world & registry
+        // Remove both merged bodies from physics world & registry
         Matter.Composite.remove(world, fruitA.body);
         Matter.Composite.remove(world, fruitB.body);
         fruitsRef.current.delete(idA);
@@ -1315,6 +1758,7 @@ export default function App() {
           comboCountRef.current += 1;
         } else {
           comboCountRef.current = 1;
+          comboRewardClaimedRef.current = false;
         }
         comboTimerRef.current =
           (getConfig('comboWindowSeconds') as number) || 2.2;
@@ -1327,20 +1771,60 @@ export default function App() {
           setMaxCombo(maxComboRef.current);
         }
 
-        const currentTierNum = fruitA.tier;
+        // Earn a Special Drop on reaching 4x+ combo chain!
+        if (
+          comboCountRef.current >= specialComboReq &&
+          !comboRewardClaimedRef.current
+        ) {
+          comboRewardClaimedRef.current = true;
+          pendingSpecialRewardRef.current = true;
+          spawnScorePopup(
+            canvasWidth / 2,
+            jarTop + 42,
+            '🌈 SPECIAL DROP EARNED!',
+            '#EC4899',
+            24,
+            0.65,
+          );
+        }
+
+        // Determine base tier being evolved (twin Rainbow Dewdrops evolve straight into Tier 6 Cucumber!)
+        const isTwinRainbow =
+          kind === 'rainbow' &&
+          fruitA.special === 'rainbow' &&
+          fruitB.special === 'rainbow';
+        const currentTierNum = isTwinRainbow
+          ? 5
+          : kind === 'rainbow'
+          ? fruitB.tier
+          : fruitA.tier;
         const achievedTier = Math.min(13, currentTierNum + 1);
         if (achievedTier > highestTierRef.current) {
           highestTierRef.current = achievedTier;
           setHighestTier(achievedTier);
         }
 
+        // Pure Merge Charge gain for Zero-G & Magnet
+        const chargeBoost =
+          comboCountRef.current >= 3 ? comboChargeMult : 1.0;
+        addPowerupCharge(
+          (agBase + currentTierNum * 2) * chargeBoost,
+          (magBase + currentTierNum * 2) * chargeBoost,
+        );
+
         const currentTierConfig = FRUIT_TIERS[currentTierNum - 1];
-        const pointsEarned = currentTierConfig ? currentTierConfig.points : 2;
+        const basePts = isTwinRainbow
+          ? 300
+          : currentTierConfig
+          ? currentTierConfig.points
+          : 2;
         const comboMult = Math.min(3.0, 1 + (comboCountRef.current - 1) * 0.25);
-        const earnedPoints = Math.round(pointsEarned * comboMult);
+        const earnedPoints = Math.round(basePts * comboMult);
 
         // Audio juice
-        if (currentTierNum >= 12) {
+        if (kind === 'rainbow') {
+          gameAudio.playWildcardShimmer();
+        } else if (currentTierNum >= 12) {
           gameAudio.playVictoryFanfare();
         } else if (currentTierNum >= 9) {
           gameAudio.playLevelUpStinger();
@@ -1372,8 +1856,13 @@ export default function App() {
         spawnJuiceSplash(
           midX,
           midY,
-          currentTierConfig ? currentTierConfig.color : '#F59E0B',
-          24,
+          kind === 'rainbow'
+            ? '#EC4899'
+            : currentTierConfig
+            ? currentTierConfig.color
+            : '#F59E0B',
+          kind === 'rainbow' ? 30 : 24,
+          kind === 'rainbow',
         );
 
         // Check if merging 2 King Durians (Tier 13) -> Pinnacle Ultimate Victory / Endless Supernova!
@@ -1385,7 +1874,6 @@ export default function App() {
           screenShakeRef.current = 12;
           gameAudio.playChiptuneExplosion();
 
-          // Gentle radial push on remaining fruits
           fruitsRef.current.forEach((other) => {
             if (other.merged) return;
             const ox = other.body.position.x - midX;
@@ -1402,6 +1890,7 @@ export default function App() {
           });
 
           updateScoreWithHighScore(victoryPoints);
+          mergeBlastCenters.push({x: midX, y: midY, r: 130});
 
           const shouldPromptVictory =
             (getConfig('kingDurianVictory') as boolean) !== false &&
@@ -1442,7 +1931,6 @@ export default function App() {
           nextTierConfig.density ??
           ((getConfig('fruitDensityMultiplier') as number) || 0.002);
 
-        // Clamp spawn position safely within the jar enclosure
         const clampedSpawnX = Math.max(
           jarX + radius + 4,
           Math.min(jarRight - radius - 4, midX),
@@ -1464,7 +1952,6 @@ export default function App() {
           },
         );
 
-        // Smoothly stabilize physics state on newly spawned fruit
         Matter.Body.setVelocity(newBody, {
           x: 0,
           y: -1.2,
@@ -1476,9 +1963,10 @@ export default function App() {
         const newEntity: FruitEntity = {
           id: `fruit_${newBody.id}`,
           tier: nextTierNum,
+          special: 'none',
           body: newBody,
           spawnTime: now,
-          renderScale: 0.2, // Bouncy pop scale-in
+          renderScale: 0.2,
           targetScale: 1.0,
           squashX: 1.32,
           squashY: 0.72,
@@ -1493,13 +1981,14 @@ export default function App() {
         };
 
         fruitsRef.current.set(newBody.id, newEntity);
+        mergeBlastCenters.push({x: clampedSpawnX, y: clampedSpawnY, r: radius});
 
         // Expanding shockwave ring
         spawnShockwave(
           clampedSpawnX,
           clampedSpawnY,
           radius * 2.15 + comboCountRef.current * 14,
-          nextTierConfig.color,
+          kind === 'rainbow' ? '#EC4899' : nextTierConfig.color,
           comboCountRef.current >= 3 || nextTierNum >= 8 ? 6 : 4,
         );
 
@@ -1537,31 +2026,68 @@ export default function App() {
           });
         }
 
-        // Float score popup
         spawnScorePopup(
           clampedSpawnX,
           clampedSpawnY,
-          `+${earnedPoints} ${nextTierConfig.name}!`,
-          nextTierConfig.color,
+          kind === 'rainbow'
+            ? `🌈 +${earnedPoints} ${nextTierConfig.name}!`
+            : `+${earnedPoints} ${nextTierConfig.name}!`,
+          kind === 'rainbow' ? '#EC4899' : nextTierConfig.color,
           nextTierNum >= 9 ? 26 : 24,
           0.55,
         );
 
-        // Update score & highscore in sync
         updateScoreWithHighScore(earnedPoints);
       });
+
+      // Trigger any settled Fizz Berry catalysts adjacent to this frame's merges!
+      if (mergeBlastCenters.length > 0) {
+        const fizzToDetonate: FruitEntity[] = [];
+        fruitsRef.current.forEach((cand) => {
+          if (cand.merged || cand.special !== 'fizz') return;
+          const hitNearby = mergeBlastCenters.some((mc) => {
+            const d = Math.hypot(
+              cand.body.position.x - mc.x,
+              cand.body.position.y - mc.y,
+            );
+            return d <= mc.r + SPECIAL_DROPS.fizz.radius + 115;
+          });
+          if (hitNearby) {
+            fizzToDetonate.push(cand);
+          }
+        });
+
+        const activeComboMult = Math.min(
+          3.0,
+          1 + Math.max(0, comboCountRef.current - 1) * 0.25,
+        );
+        fizzToDetonate.forEach((fizzEntity) => {
+          if (fizzEntity.merged || !fruitsRef.current.has(fizzEntity.body.id)) {
+            return;
+          }
+          fizzEntity.merged = true;
+          const fx = fizzEntity.body.position.x;
+          const fy = fizzEntity.body.position.y;
+          Matter.Composite.remove(world, fizzEntity.body);
+          fruitsRef.current.delete(fizzEntity.body.id);
+          detonateFizzAt(world, fx, fy, activeComboMult);
+        });
+      }
     }
 
-    // 4. Update Fruits Rescue Clamp, Squash Springs, Animations & Danger Line Check
+    // 4. Update Fruits Rescue Clamp, Squash Springs, Expressions & Simmer/Danger Tension
     let settledBreach = false;
+    let settledSimmer = false;
     const isAntiGravityRunning =
       antiGravityTimerRef.current > 0 || dangerGraceCooldownRef.current > 0;
     const springDt = Math.min(deltaTime, 0.033);
     const springStiffness = 230;
     const springDamping = 15;
+    const simmerLineY = dangerLineY + 135;
+    const activeMag = activeMagnetRef.current;
 
     fruitsRef.current.forEach((fruit) => {
-      const fruitRadius = FRUIT_TIERS[fruit.tier - 1]?.radius || 22;
+      const fruitRadius = getFruitEntityRadius(fruit);
 
       // Safety rescue clamp: prevent multi-body pressure from ever forcing a fruit outside jar bounds
       const minX = jarX + fruitRadius;
@@ -1654,31 +2180,47 @@ export default function App() {
         }
       }
 
-      // Expressions
+      // Decay timed expressions
       if (fruit.expressionTimer > 0) {
         fruit.expressionTimer -= deltaTime;
         if (fruit.expressionTimer <= 0) {
-          fruit.expression = fruit.tier === 13 ? 'regal' : 'happy';
+          fruit.expression =
+            fruit.special === 'none' && fruit.tier === 13 ? 'regal' : 'happy';
         }
       }
 
-      // Check danger line condition for settled fruits (>2.0s age and low kinetic velocity)
-      // Danger line is strictly suppressed during Anti-Gravity and its cooldown grace
-      if (!isAntiGravityRunning) {
+      // Contextual Physics Expressions (Zero-G Dizzy, Magnet Starry, Simmer Sweat, Danger Shock)
+      const isMagLocked =
+        activeMag !== null &&
+        (activeMag.fruitAId === fruit.body.id ||
+          activeMag.fruitBId === fruit.body.id);
+
+      if (antiGravityTimerRef.current > 0) {
+        fruit.expression = 'dizzy';
+        fruit.expressionTimer = 0.12;
+      } else if (isMagLocked) {
+        fruit.expression = 'starry';
+        fruit.expressionTimer = 0.15;
+      } else if (!isAntiGravityRunning) {
         const ageSeconds = (now - fruit.spawnTime) / 1000;
         const speed = Math.hypot(fruit.body.velocity.x, fruit.body.velocity.y);
         const topY = fruit.body.position.y - fruitRadius;
 
-        // Fruit is settled, older than 2s, and stacked over danger line
         if (ageSeconds > 2.0 && speed < 1.5 && topY < dangerLineY) {
           settledBreach = true;
           fruit.expression = 'shocked';
-          fruit.expressionTimer = 0.5;
+          fruit.expressionTimer = 0.35;
+        } else if (ageSeconds > 1.5 && speed < 1.8 && topY < simmerLineY) {
+          settledSimmer = true;
+          if (fruit.expressionTimer <= 0.12) {
+            fruit.expression = 'sweating';
+            fruit.expressionTimer = 0.25;
+          }
         }
       }
     });
 
-    // 5. Danger Line Accumulator (Suppressed during Anti-Gravity)
+    // 5. Danger Line Accumulator & Dynamic Audio Tension Escalation / Relief
     const dangerGrace = (getConfig('dangerGraceSeconds') as number) || 2.5;
     if (settledBreach && !isAntiGravityRunning) {
       dangerTimerRef.current += deltaTime;
@@ -1690,6 +2232,27 @@ export default function App() {
         0,
         dangerTimerRef.current - deltaTime * 1.5,
       );
+    }
+
+    const nextTensionTier: 0 | 1 | 2 =
+      !isAntiGravityRunning && dangerTimerRef.current > 0.05
+        ? 2
+        : !isAntiGravityRunning && settledSimmer
+        ? 1
+        : 0;
+
+    if (nextTensionTier > 0) {
+      simmerDurationRef.current += deltaTime;
+    } else if (tensionTierRef.current > 0) {
+      if (tensionTierRef.current === 2 || simmerDurationRef.current >= 2.2) {
+        gameAudio.playReliefSplash();
+      }
+      simmerDurationRef.current = 0;
+    }
+
+    if (nextTensionTier !== tensionTierRef.current) {
+      tensionTierRef.current = nextTensionTier;
+      setMusicTensionTier(nextTensionTier);
     }
 
     // 6. Update Shockwave Rings
@@ -1736,12 +2299,16 @@ export default function App() {
     }
   };
 
-  // Kawaii Face Drawing Helper
+  // Kawaii & Contextual Physics Face Drawing Helper
   const drawFruitFace = (
     ctx: CanvasRenderingContext2D,
     radius: number,
     fruit: FruitEntity,
+    overrideExpression?: FruitExpression,
   ) => {
+    const expr = overrideExpression || fruit.expression;
+    const nowMs = performance.now();
+
     ctx.save();
     const faceScale = radius / 36;
     ctx.scale(faceScale, faceScale);
@@ -1749,16 +2316,65 @@ export default function App() {
     const eyeOffsetX = 8;
     const eyeOffsetY = -2;
 
-    // Cheeks
-    ctx.fillStyle = 'rgba(255, 120, 140, 0.45)';
+    // Cheeks (richer blush when starry-eyed!)
+    ctx.fillStyle =
+      expr === 'starry'
+        ? 'rgba(255, 95, 130, 0.65)'
+        : 'rgba(255, 120, 140, 0.45)';
     ctx.beginPath();
-    ctx.arc(-eyeOffsetX - 3, eyeOffsetY + 5, 4, 0, Math.PI * 2);
-    ctx.arc(eyeOffsetX + 3, eyeOffsetY + 5, 4, 0, Math.PI * 2);
+    ctx.arc(-eyeOffsetX - 3, eyeOffsetY + 5, expr === 'starry' ? 4.8 : 4, 0, Math.PI * 2);
+    ctx.arc(eyeOffsetX + 3, eyeOffsetY + 5, expr === 'starry' ? 4.8 : 4, 0, Math.PI * 2);
     ctx.fill();
 
     // Eyes
     ctx.fillStyle = '#2C1810';
-    if (fruit.isBlinking) {
+    if (expr === 'dizzy') {
+      // Rotating spiral Zero-G eyes (@ @)
+      const spin = nowMs * 0.008;
+      [-eyeOffsetX, eyeOffsetX].forEach((ex, idx) => {
+        ctx.save();
+        ctx.translate(ex, eyeOffsetY);
+        ctx.rotate(idx === 0 ? spin : -spin);
+        ctx.strokeStyle = '#2C1810';
+        ctx.lineWidth = 1.6;
+        ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let t = 0; t <= 14; t++) {
+          const ang = t * 0.85;
+          const rSpiral = 0.28 * t;
+          const px = Math.cos(ang) * rSpiral;
+          const py = Math.sin(ang) * rSpiral;
+          if (t === 0) ctx.moveTo(px, py);
+          else ctx.lineTo(px, py);
+        }
+        ctx.stroke();
+        ctx.restore();
+      });
+    } else if (expr === 'starry') {
+      // Golden 4-point star eyes (Magnet Beam / Merge Aim lock!)
+      const pulse = 1 + 0.14 * Math.sin(nowMs * 0.016);
+      [-eyeOffsetX, eyeOffsetX].forEach((ex) => {
+        ctx.save();
+        ctx.translate(ex, eyeOffsetY);
+        ctx.scale(pulse, pulse);
+        ctx.fillStyle = '#FFD700';
+        ctx.strokeStyle = '#92400E';
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        for (let p = 0; p < 8; p++) {
+          const ang = (p * Math.PI) / 4 - Math.PI / 2;
+          const rStar = p % 2 === 0 ? 4.4 : 1.7;
+          const sx = Math.cos(ang) * rStar;
+          const sy = Math.sin(ang) * rStar;
+          if (p === 0) ctx.moveTo(sx, sy);
+          else ctx.lineTo(sx, sy);
+        }
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      });
+    } else if (fruit.isBlinking && expr !== 'shocked' && expr !== 'sweating') {
       // Blinking curved eye lines
       ctx.lineWidth = 2;
       ctx.strokeStyle = '#2C1810';
@@ -1769,20 +2385,52 @@ export default function App() {
       ctx.beginPath();
       ctx.arc(eyeOffsetX, eyeOffsetY + 1, 3.5, Math.PI, 0);
       ctx.stroke();
-    } else if (fruit.expression === 'shocked') {
-      // Shocked big open eyes
+    } else if (expr === 'shocked') {
+      // Wide panic eyes with white sclera ring
+      ctx.fillStyle = '#FFFFFF';
       ctx.beginPath();
-      ctx.arc(-eyeOffsetX, eyeOffsetY, 3.5, 0, Math.PI * 2);
-      ctx.arc(eyeOffsetX, eyeOffsetY, 3.5, 0, Math.PI * 2);
+      ctx.arc(-eyeOffsetX, eyeOffsetY, 4.4, 0, Math.PI * 2);
+      ctx.arc(eyeOffsetX, eyeOffsetY, 4.4, 0, Math.PI * 2);
       ctx.fill();
-    } else if (fruit.expression === 'regal') {
+      ctx.strokeStyle = '#2C1810';
+      ctx.lineWidth = 1.3;
+      ctx.stroke();
+
+      const jitterX = Math.sin(nowMs * 0.045) * 0.6;
+      ctx.fillStyle = '#2C1810';
+      ctx.beginPath();
+      ctx.arc(-eyeOffsetX + jitterX, eyeOffsetY, 2.1, 0, Math.PI * 2);
+      ctx.arc(eyeOffsetX + jitterX, eyeOffsetY, 2.1, 0, Math.PI * 2);
+      ctx.fill();
+    } else if (expr === 'sweating') {
+      // Worried eyes + angled nervous brows
+      ctx.beginPath();
+      ctx.arc(-eyeOffsetX, eyeOffsetY + 0.5, 2.9, 0, Math.PI * 2);
+      ctx.arc(eyeOffsetX, eyeOffsetY + 0.5, 2.9, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.beginPath();
+      ctx.arc(-eyeOffsetX - 0.9, eyeOffsetY - 0.6, 1.1, 0, Math.PI * 2);
+      ctx.arc(eyeOffsetX - 0.9, eyeOffsetY - 0.6, 1.1, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = '#2C1810';
+      ctx.lineWidth = 1.6;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.moveTo(-eyeOffsetX - 3.2, eyeOffsetY - 4.2);
+      ctx.lineTo(-eyeOffsetX + 2.5, eyeOffsetY - 5.8);
+      ctx.moveTo(eyeOffsetX + 3.2, eyeOffsetY - 4.2);
+      ctx.lineTo(eyeOffsetX - 2.5, eyeOffsetY - 5.8);
+      ctx.stroke();
+    } else if (expr === 'regal') {
       // Regal confident sparkling eyes
       ctx.beginPath();
       ctx.arc(-eyeOffsetX, eyeOffsetY, 3.2, 0, Math.PI * 2);
       ctx.arc(eyeOffsetX, eyeOffsetY, 3.2, 0, Math.PI * 2);
       ctx.fill();
 
-      // Sparkle highlights
       ctx.fillStyle = '#FFD700';
       ctx.beginPath();
       ctx.arc(-eyeOffsetX - 1, eyeOffsetY - 1, 1.4, 0, Math.PI * 2);
@@ -1808,15 +2456,30 @@ export default function App() {
     ctx.lineCap = 'round';
     ctx.fillStyle = '#C84B31';
 
-    if (fruit.expression === 'shocked') {
+    if (expr === 'shocked') {
       ctx.beginPath();
-      ctx.arc(0, eyeOffsetY + 6, 3.5, 0, Math.PI * 2);
+      ctx.ellipse(0, eyeOffsetY + 6.5, 3.2, 4.2, 0, 0, Math.PI * 2);
       ctx.fill();
       ctx.stroke();
-    } else if (fruit.expression === 'bouncy' || fruit.expression === 'regal') {
+    } else if (expr === 'dizzy') {
+      ctx.beginPath();
+      ctx.arc(0, eyeOffsetY + 5.5, 2.5, 0, Math.PI * 2);
+      ctx.stroke();
+    } else if (expr === 'sweating') {
+      // Nervous wavy mouth (~)
+      ctx.beginPath();
+      ctx.moveTo(-4, eyeOffsetY + 5.5);
+      ctx.quadraticCurveTo(-2, eyeOffsetY + 3.5, 0, eyeOffsetY + 5.5);
+      ctx.quadraticCurveTo(2, eyeOffsetY + 7.5, 4, eyeOffsetY + 5.5);
+      ctx.stroke();
+    } else if (
+      expr === 'bouncy' ||
+      expr === 'regal' ||
+      expr === 'starry'
+    ) {
       // Big open happy smile :D
       ctx.beginPath();
-      ctx.arc(0, eyeOffsetY + 3, 4, 0, Math.PI);
+      ctx.arc(0, eyeOffsetY + 3, 4.2, 0, Math.PI);
       ctx.closePath();
       ctx.fill();
       ctx.stroke();
@@ -1827,15 +2490,147 @@ export default function App() {
       ctx.stroke();
     }
 
+    // Animated cyan sweat droplet(s) when in Simmer / Danger tension!
+    if (expr === 'sweating' || expr === 'shocked') {
+      const drawSweatDrop = (dx: number, dy: number, sScale: number) => {
+        ctx.save();
+        ctx.translate(dx, dy);
+        ctx.scale(sScale, sScale);
+        ctx.fillStyle = '#38BDF8';
+        ctx.strokeStyle = '#0369A1';
+        ctx.lineWidth = 1.1;
+        ctx.beginPath();
+        ctx.moveTo(0, -4.5);
+        ctx.bezierCurveTo(3.5, -0.5, 3.5, 4, 0, 4.5);
+        ctx.bezierCurveTo(-3.5, 4, -3.5, -0.5, 0, -4.5);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+        ctx.restore();
+      };
+
+      const dropBob = (nowMs * 0.006) % 1;
+      drawSweatDrop(14.5, -9 + dropBob * 4.5, 0.95);
+      if (expr === 'shocked') {
+        const dropBob2 = ((nowMs * 0.006) + 0.5) % 1;
+        drawSweatDrop(-14.5, -7 + dropBob2 * 4.5, 0.85);
+      }
+    }
+
     ctx.restore();
   };
 
-  // Procedural Drawing for Cucumber, King Durian, or Sprite Fallbacks
+  // Procedural Drawing for Special Drops, Cucumber, King Durian, or Sprite Fallbacks
   const drawFruitBody = (
     ctx: CanvasRenderingContext2D,
     tierConfig: FruitTier,
     radius: number,
+    special: SpecialDropKind = 'none',
   ) => {
+    const nowMs = performance.now();
+
+    // Special 1: Rainbow Dewdrop Wildcard
+    if (special === 'rainbow') {
+      const hueShift = (nowMs * 0.09) % 360;
+      const grad = ctx.createLinearGradient(-radius, -radius, radius, radius);
+      grad.addColorStop(0, `hsl(${hueShift}, 95%, 65%)`);
+      grad.addColorStop(0.33, `hsl(${(hueShift + 90) % 360}, 95%, 60%)`);
+      grad.addColorStop(0.66, `hsl(${(hueShift + 190) % 360}, 95%, 60%)`);
+      grad.addColorStop(1, `hsl(${(hueShift + 280) % 360}, 95%, 65%)`);
+
+      ctx.save();
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      ctx.strokeStyle = '#FFFBEB';
+      ctx.lineWidth = 3.2;
+      ctx.stroke();
+
+      // Glossy specular sheen
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.6)';
+      ctx.beginPath();
+      ctx.ellipse(
+        -radius * 0.3,
+        -radius * 0.34,
+        radius * 0.3,
+        radius * 0.17,
+        -0.5,
+        0,
+        Math.PI * 2,
+      );
+      ctx.fill();
+
+      // Twinkling 4-point star glint
+      ctx.translate(radius * 0.36, -radius * 0.36);
+      ctx.rotate(nowMs * 0.003);
+      ctx.fillStyle = '#FFFFFF';
+      const glintR = radius * 0.24;
+      ctx.beginPath();
+      for (let i = 0; i < 8; i++) {
+        const a = (i * Math.PI) / 4;
+        const r = i % 2 === 0 ? glintR : glintR * 0.35;
+        if (i === 0) ctx.moveTo(Math.cos(a) * r, Math.sin(a) * r);
+        else ctx.lineTo(Math.cos(a) * r, Math.sin(a) * r);
+      }
+      ctx.closePath();
+      ctx.fill();
+      ctx.restore();
+      return;
+    }
+
+    // Special 2: Fizz Berry Catalyst
+    if (special === 'fizz') {
+      ctx.save();
+      const grad = ctx.createRadialGradient(
+        -radius * 0.25,
+        -radius * 0.25,
+        radius * 0.1,
+        0,
+        0,
+        radius,
+      );
+      grad.addColorStop(0, '#CFFAFE');
+      grad.addColorStop(0.55, '#06B6D4');
+      grad.addColorStop(1, '#0E7490');
+
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Rising internal soda bubbles
+      const bubbleSeeds = [
+        {x: -0.38, phase: 0.0, r: 0.13},
+        {x: 0.36, phase: 0.35, r: 0.11},
+        {x: -0.15, phase: 0.65, r: 0.09},
+        {x: 0.22, phase: 0.82, r: 0.12},
+      ];
+      ctx.fillStyle = 'rgba(255, 255, 255, 0.62)';
+      bubbleSeeds.forEach((b) => {
+        const rise = ((nowMs * 0.0012 + b.phase) % 1) * 1.1 - 0.55;
+        ctx.beginPath();
+        ctx.arc(
+          radius * b.x,
+          -radius * rise,
+          Math.max(2, radius * b.r),
+          0,
+          Math.PI * 2,
+        );
+        ctx.fill();
+      });
+
+      // Effervescent dashed outer ring
+      ctx.setLineDash([6, 4]);
+      ctx.strokeStyle = '#BEF264';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.arc(0, 0, radius, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      return;
+    }
     // 1. Procedural Cucumber (Tier 6)
     if (tierConfig.tier === 6) {
       // Base cucumber green circle
@@ -2203,12 +2998,71 @@ export default function App() {
       ctx.restore();
     });
 
+    // Precompute Smart Swept-Circle Raycast so targeted fruits also light up with starry eyes!
+    const activeDropItem = currentItemRef.current;
+    const activeItemMeta = getDropItemDetails(activeDropItem);
+    const activeRadius = activeItemMeta.radius;
+    const curDropperX = Math.max(
+      jarX + activeRadius + 4,
+      Math.min(jarRight - activeRadius - 4, dropperXRef.current),
+    );
+    const isUpwardZeroG = antiGravityTimerRef.current > 2.0;
+    const rainbowMaxTier = (getConfig('rainbowMaxTargetTier') as number) || 9;
+
+    let landingCenterY = jarBottom - activeRadius;
+    let matchedFruit: FruitEntity | null = null;
+
+    if (gameState.status === 'PLAYING') {
+      fruitsRef.current.forEach((f) => {
+        if (f.merged) return;
+        const fx = f.body.position.x;
+        const fy = f.body.position.y;
+        const fr = getFruitEntityRadius(f);
+        const dx = Math.abs(curDropperX - fx);
+        const sumR = activeRadius + fr;
+        if (dx < sumR && fy > dropperY) {
+          const candY = fy - Math.sqrt(sumR * sumR - dx * dx);
+          if (candY < landingCenterY) {
+            landingCenterY = candY;
+            matchedFruit = f;
+          }
+        }
+      });
+      landingCenterY = Math.max(dropperY + activeRadius, landingCenterY);
+    }
+
+    const rayHitFruit = matchedFruit as FruitEntity | null;
+    const isWildcardMerge =
+      !isUpwardZeroG &&
+      activeDropItem.special === 'rainbow' &&
+      rayHitFruit !== null &&
+      ((rayHitFruit.special === 'none' && rayHitFruit.tier <= rainbowMaxTier) ||
+        rayHitFruit.special === 'rainbow' ||
+        rayHitFruit.special === 'fizz');
+    const isStandardMerge =
+      !isUpwardZeroG &&
+      activeDropItem.special === 'none' &&
+      rayHitFruit !== null &&
+      rayHitFruit.special === 'none' &&
+      rayHitFruit.tier === activeDropItem.tier;
+    const isFizzPairMerge =
+      !isUpwardZeroG &&
+      activeDropItem.special === 'fizz' &&
+      rayHitFruit !== null &&
+      (rayHitFruit.special === 'fizz' || rayHitFruit.special === 'rainbow');
+    const isMergeTarget =
+      isWildcardMerge || isStandardMerge || isFizzPairMerge;
+    const aimStarryId =
+      gameState.status === 'PLAYING' && isMergeTarget && rayHitFruit
+        ? rayHitFruit.body.id
+        : -1;
+
     // 4. Render Active Physics Fruits (world-axis squash applied BEFORE sprite rotation)
     fruitsRef.current.forEach((fruit) => {
       const {x, y} = fruit.body.position;
       const angle = fruit.body.angle;
       const tierConfig = FRUIT_TIERS[fruit.tier - 1] || FRUIT_TIERS[0];
-      const radius = tierConfig.radius;
+      const radius = getFruitEntityRadius(fruit);
 
       ctx.save();
       ctx.translate(x, y);
@@ -2218,55 +3072,33 @@ export default function App() {
       );
       ctx.rotate(angle);
 
-      // Render fruit body (procedural or sprite)
-      drawFruitBody(ctx, tierConfig, radius);
+      // Render fruit body (special drop, procedural, or sprite)
+      drawFruitBody(ctx, tierConfig, radius, fruit.special);
 
-      // Draw cute kawaii face over fruit
-      drawFruitFace(ctx, radius, fruit);
+      // Draw contextual face (highlight raycast merge target with starry eyes!)
+      const faceOverride: FruitExpression | undefined =
+        fruit.body.id === aimStarryId && antiGravityTimerRef.current <= 0
+          ? 'starry'
+          : undefined;
+      drawFruitFace(ctx, radius, fruit, faceOverride);
 
       ctx.restore();
     });
 
     // 5. Render Smart Swept-Circle Raycast Aiming & Dropper Fruit (when game is playing)
     if (gameState.status === 'PLAYING') {
-      const activeTierConfig =
-        FRUIT_TIERS[currentTierRef.current - 1] || FRUIT_TIERS[0];
-      const radius = activeTierConfig.radius;
-      const curDropperX = Math.max(
-        jarX + radius + 4,
-        Math.min(jarRight - radius - 4, dropperXRef.current),
-      );
+      const activeTierConfig = activeItemMeta.tierConfig;
+      const radius = activeRadius;
       const timeSinceDrop = performance.now() - lastDropTimeRef.current;
       const cooldown = (getConfig('dropCooldownMs') as number) || 450;
       const readyProgress = Math.min(1, timeSinceDrop / cooldown);
       const isReady = readyProgress >= 1;
       const dropperScale = 0.5 + 0.5 * Math.min(1, readyProgress * 1.1);
-
-      // Swept-circle raycast against jar floor and all non-merged fruits
-      let landingCenterY = jarBottom - radius;
-      let hitFruit: FruitEntity | null = null;
-
-      fruitsRef.current.forEach((f) => {
-        if (f.merged) return;
-        const fx = f.body.position.x;
-        const fy = f.body.position.y;
-        const fr = FRUIT_TIERS[f.tier - 1]?.radius || 22;
-        const dx = Math.abs(curDropperX - fx);
-        const sumR = radius + fr;
-        if (dx < sumR && fy > dropperY) {
-          const candY = fy - Math.sqrt(sumR * sumR - dx * dx);
-          if (candY < landingCenterY) {
-            landingCenterY = candY;
-            hitFruit = f;
-          }
-        }
-      });
-      landingCenterY = Math.max(dropperY + radius, landingCenterY);
-
-      const matchedFruit = hitFruit as FruitEntity | null;
-      const isMergeTarget =
-        matchedFruit !== null && matchedFruit.tier === currentTierRef.current;
-      const isUpwardZeroG = antiGravityTimerRef.current > 2.0;
+      const reticlePrimaryColor = isWildcardMerge
+        ? '#EC4899'
+        : isFizzPairMerge
+        ? '#06B6D4'
+        : '#10B981';
 
       ctx.save();
       if (isUpwardZeroG) {
@@ -2281,21 +3113,18 @@ export default function App() {
       } else {
         const pulse = 0.5 + 0.5 * Math.sin(performance.now() * 0.012);
 
-        // Highlight target matching fruit with emerald-gold halo
-        if (isMergeTarget && matchedFruit) {
-          const targetR =
-            (FRUIT_TIERS[matchedFruit.tier - 1]?.radius || radius) +
-            5 +
-            pulse * 4;
+        // Highlight target matching fruit with emerald/magenta-gold halo
+        if (isMergeTarget && rayHitFruit) {
+          const targetR = getFruitEntityRadius(rayHitFruit) + 5 + pulse * 4;
           ctx.save();
-          ctx.strokeStyle = '#10B981';
+          ctx.strokeStyle = reticlePrimaryColor;
           ctx.lineWidth = 3.5;
           ctx.shadowColor = '#F59E0B';
           ctx.shadowBlur = 10;
           ctx.beginPath();
           ctx.arc(
-            matchedFruit.body.position.x,
-            matchedFruit.body.position.y,
+            rayHitFruit.body.position.x,
+            rayHitFruit.body.position.y,
             targetR,
             0,
             Math.PI * 2,
@@ -2307,8 +3136,8 @@ export default function App() {
           ctx.lineWidth = 2;
           ctx.beginPath();
           ctx.arc(
-            matchedFruit.body.position.x,
-            matchedFruit.body.position.y,
+            rayHitFruit.body.position.x,
+            rayHitFruit.body.position.y,
             targetR + 4,
             0,
             Math.PI * 2,
@@ -2320,7 +3149,9 @@ export default function App() {
         // Vertical Dashed Guideline from dropper bottom to exact landing center
         if (isMergeTarget) {
           ctx.save();
-          ctx.strokeStyle = 'rgba(245, 158, 11, 0.35)';
+          ctx.strokeStyle = isWildcardMerge
+            ? 'rgba(236, 72, 153, 0.35)'
+            : 'rgba(245, 158, 11, 0.35)';
           ctx.lineWidth = 7;
           ctx.beginPath();
           ctx.moveTo(curDropperX, dropperY + radius);
@@ -2331,7 +3162,7 @@ export default function App() {
 
         ctx.setLineDash([8, 8]);
         ctx.strokeStyle = isMergeTarget
-          ? '#10B981'
+          ? reticlePrimaryColor
           : isReady
           ? 'rgba(140, 88, 50, 0.45)'
           : 'rgba(140, 88, 50, 0.2)';
@@ -2344,7 +3175,9 @@ export default function App() {
 
         // Translucent Ghost Landing Circle at exact swept-circle contact center
         ctx.fillStyle = isMergeTarget
-          ? `rgba(16, 185, 129, ${0.15 + pulse * 0.1})`
+          ? isWildcardMerge
+            ? `rgba(236, 72, 153, ${0.16 + pulse * 0.1})`
+            : `rgba(16, 185, 129, ${0.15 + pulse * 0.1})`
           : isReady
           ? 'rgba(255, 255, 255, 0.18)'
           : 'rgba(255, 255, 255, 0.08)';
@@ -2354,7 +3187,7 @@ export default function App() {
 
         ctx.setLineDash(isMergeTarget ? [] : [5, 5]);
         ctx.strokeStyle = isMergeTarget
-          ? '#10B981'
+          ? reticlePrimaryColor
           : isReady
           ? 'rgba(245, 158, 11, 0.55)'
           : 'rgba(140, 88, 50, 0.25)';
@@ -2365,7 +3198,6 @@ export default function App() {
         ctx.setLineDash([]);
 
         if (isMergeTarget) {
-          // Inner gold accent ring + crisp "✨ MERGE!" indicator pill
           ctx.strokeStyle = '#F59E0B';
           ctx.lineWidth = 1.8;
           ctx.beginPath();
@@ -2378,7 +3210,12 @@ export default function App() {
           );
           ctx.stroke();
 
-          const pillW = 94;
+          const pillLabel = isWildcardMerge
+            ? '🌈 WILDCARD!'
+            : isFizzPairMerge
+            ? '🫧 FIZZ BLAST!'
+            : '✨ MERGE!';
+          const pillW = isWildcardMerge || isFizzPairMerge ? 114 : 94;
           const pillH = 22;
           const pillX = Math.max(
             jarX + pillW / 2 + 6,
@@ -2389,7 +3226,11 @@ export default function App() {
             landingCenterY - radius - 16,
           );
 
-          ctx.fillStyle = 'rgba(6, 95, 70, 0.92)';
+          ctx.fillStyle = isWildcardMerge
+            ? 'rgba(131, 24, 67, 0.92)'
+            : isFizzPairMerge
+            ? 'rgba(14, 116, 144, 0.92)'
+            : 'rgba(6, 95, 70, 0.92)';
           ctx.strokeStyle = '#F59E0B';
           ctx.lineWidth = 2;
           ctx.beginPath();
@@ -2401,7 +3242,7 @@ export default function App() {
           ctx.textAlign = 'center';
           ctx.textBaseline = 'middle';
           ctx.fillStyle = '#FDE68A';
-          ctx.fillText('✨ MERGE!', pillX, pillY + 0.5);
+          ctx.fillText(pillLabel, pillX, pillY + 0.5);
         } else {
           // Center landing dot
           ctx.fillStyle = isReady
@@ -2424,7 +3265,7 @@ export default function App() {
       if (isReady) {
         ctx.strokeStyle =
           isMergeTarget && !isUpwardZeroG
-            ? 'rgba(16, 185, 129, 0.8)'
+            ? reticlePrimaryColor
             : 'rgba(245, 158, 11, 0.5)';
         ctx.lineWidth = 3;
         ctx.beginPath();
@@ -2432,13 +3273,14 @@ export default function App() {
         ctx.stroke();
       }
 
-      // Draw held fruit body
-      drawFruitBody(ctx, activeTierConfig, radius);
+      // Draw held fruit or special body
+      drawFruitBody(ctx, activeTierConfig, radius, activeDropItem.special);
 
       // Cute face on held dropper fruit
       const fakeHeldFruit: FruitEntity = {
         id: 'held',
-        tier: currentTierRef.current,
+        tier: activeDropItem.tier,
+        special: activeDropItem.special,
         body: null as any,
         spawnTime: 0,
         renderScale: 1,
@@ -2451,7 +3293,9 @@ export default function App() {
         blinkTimer: 0,
         isBlinking: false,
         expression: isReady
-          ? currentTierRef.current === 13
+          ? isMergeTarget
+            ? 'starry'
+            : activeDropItem.special === 'none' && activeDropItem.tier === 13
             ? 'regal'
             : 'happy'
           : 'sleepy',
@@ -2639,14 +3483,24 @@ export default function App() {
   const isMusicPlaying =
     gameState.status === 'PLAYING' && !isMenuOpen && !musicMuted;
 
-  // Next Fruit Asset & Info
-  const nextFruitConfig = FRUIT_TIERS[nextTier - 1] || FRUIT_TIERS[0];
+  const musicPlaybackRate = antiGravityActive
+    ? 0.94
+    : musicTensionTier === 2
+    ? 1.09
+    : musicTensionTier === 1
+    ? 1.04
+    : 1.0;
+
+  // Next & Hold Item Info
+  const nextItemMeta = getDropItemDetails(nextItem);
+  const heldItemMeta = heldItem ? getDropItemDetails(heldItem) : null;
 
   // Session summary stats for Game Over & Victory overlays
+  const bestFruitName = FRUIT_TIERS[highestTier - 1]?.name || 'Cherry';
   const sessionStats = [
     {
       label: 'Best Fruit',
-      value: FRUIT_TIERS[highestTier - 1]?.name || 'Cherry',
+      value: bestFruitName,
     },
     {
       label: 'Max Combo',
@@ -2657,6 +3511,51 @@ export default function App() {
       value: totalMerges,
     },
   ];
+
+  // Copy 1-click emoji scorecard for Daily Harvest or Classic runs
+  const copyShareableScorecard = () => {
+    const badgeEmoji =
+      highestTier >= 13 ? '👑' : highestTier >= 12 ? '🍉' : '🍒';
+    const headerLine =
+      gameMode === 'DAILY'
+        ? `${badgeEmoji} Juicy Drop — Daily Harvest #${dailyInfo.dayNumber} (${dailyInfo.dateLabel})`
+        : `${badgeEmoji} Juicy Drop — Classic Run`;
+    const scorecardText = [
+      headerLine,
+      `🏆 Score: ${gameState.score.toLocaleString()} • Best: ${bestFruitName}`,
+      `🔥 Max Combo: ${Math.max(1, maxCombo)}x • Merges: ${totalMerges}`,
+      `https://smashing-fruits.netlify.app`,
+    ].join('\n');
+
+    try {
+      void navigator.clipboard.writeText(scorecardText);
+      setScorecardCopied(true);
+      gameAudio.playConfirmSelect();
+      window.setTimeout(() => setScorecardCopied(false), 2200);
+    } catch {}
+  };
+
+  const shareFooterNode = (
+    <button
+      onClick={copyShareableScorecard}
+      className="px-4 py-2 rounded-full bg-black/35 hover:bg-black/50 border border-white/30 text-white/95 text-xs md:text-sm font-bold flex items-center gap-1.5 transition-all active:scale-95 cursor-pointer">
+      {scorecardCopied ? (
+        <>
+          <Check size={15} className="text-emerald-300" />
+          <span>Scorecard Copied!</span>
+        </>
+      ) : (
+        <>
+          <Copy size={15} />
+          <span>
+            {gameMode === 'DAILY'
+              ? `Share Daily #${dailyInfo.dayNumber} Scorecard`
+              : 'Copy Run Scorecard'}
+          </span>
+        </>
+      )}
+    </button>
+  );
 
   return (
     <div
@@ -2675,14 +3574,15 @@ export default function App() {
         isPlaying={isMusicPlaying}
         isMuted={musicMuted}
         volume={(getConfig('defaultMusicVolume') as number) ?? 0.18}
+        playbackRate={musicPlaybackRate}
       />
 
       {/* TOP DEDICATED HUD BAR */}
-      <header className="w-full bg-[#EAD8C0] border-b-2 border-[#C89666] shadow-sm px-2.5 py-1.5 z-20 shrink-0 flex items-center justify-between gap-1.5 max-w-2xl mx-auto pointer-events-auto">
-        {/* Left: Score, High Score & Endless Pill */}
-        <div className="flex items-center gap-1.5">
-          <div className="bg-[#FAF3E7] px-2.5 py-1 rounded-xl border border-[#D4A373] shadow-inner flex flex-col items-start min-w-[60px]">
-            <span className="text-[9px] uppercase font-extrabold text-[#9A6B42] leading-none">
+      <header className="w-full bg-[#EAD8C0] border-b-2 border-[#C89666] shadow-sm px-2 py-1.5 z-20 shrink-0 flex items-center justify-between gap-1 max-w-2xl mx-auto pointer-events-auto">
+        {/* Left: Score, High Score & Mode Pills */}
+        <div className="flex items-center gap-1">
+          <div className="bg-[#FAF3E7] px-2 py-1 rounded-xl border border-[#D4A373] shadow-inner flex flex-col items-start min-w-[54px]">
+            <span className="text-[8px] uppercase font-extrabold text-[#9A6B42] leading-none">
               SCORE
             </span>
             <span className="text-sm md:text-base font-black text-[#5C3A21] leading-tight">
@@ -2690,106 +3590,183 @@ export default function App() {
             </span>
           </div>
 
-          <div className="hidden sm:flex bg-[#FAF3E7] px-2.5 py-1 rounded-xl border border-[#D4A373] shadow-inner flex-col items-start min-w-[60px]">
-            <span className="text-[9px] uppercase font-extrabold text-[#9A6B42] leading-none flex items-center gap-1">
+          <div className="hidden sm:flex bg-[#FAF3E7] px-2 py-1 rounded-xl border border-[#D4A373] shadow-inner flex-col items-start min-w-[54px]">
+            <span className="text-[8px] uppercase font-extrabold text-[#9A6B42] leading-none flex items-center gap-1">
               <Trophy size={9} className="text-[#F59E0B]" /> BEST
             </span>
             <span className="text-sm md:text-base font-black text-[#8A5836] leading-tight">
-              {Math.max(highScore, gameState.score)}
+              {gameMode === 'DAILY'
+                ? Math.max(dailyHighScore, gameState.score)
+                : Math.max(highScore, gameState.score)}
             </span>
           </div>
+
+          {gameMode === 'DAILY' && (
+            <div
+              title={`Daily Harvest #${dailyInfo.dayNumber} (${dailyInfo.dateLabel})`}
+              className="hidden md:flex bg-emerald-100 text-emerald-900 px-2 py-1 rounded-full border border-emerald-400 shadow-xs items-center gap-1 shrink-0">
+              <Calendar size={10} className="text-emerald-700" />
+              <span className="text-[9px] font-black tracking-tight leading-none">
+                #{dailyInfo.dayNumber}
+              </span>
+            </div>
+          )}
 
           {isEndlessMode && (
             <div
               title="Endless Mode Active"
-              className="bg-gradient-to-r from-amber-400 to-yellow-300 text-[#4A2810] px-2 py-1 rounded-full border border-amber-600 shadow-sm flex items-center gap-1 shrink-0">
-              <span className="text-[10px] font-black tracking-tight leading-none">
-                ∞ ENDLESS
+              className="bg-gradient-to-r from-amber-400 to-yellow-300 text-[#4A2810] px-1.5 py-1 rounded-full border border-amber-600 shadow-sm flex items-center gap-0.5 shrink-0">
+              <span className="text-[9px] font-black tracking-tight leading-none">
+                ∞
               </span>
             </div>
           )}
         </div>
 
-        {/* Center: Next Fruit Badge */}
-        <div className="flex items-center gap-1.5 bg-[#FAF3E7] px-2.5 py-1 rounded-2xl border border-[#D4A373] shadow-sm">
-          <div className="flex flex-col items-center">
-            <span className="text-[8px] uppercase font-extrabold text-[#9A6B42] leading-none">
-              NEXT
-            </span>
-            <span className="text-[11px] font-bold text-[#4A2810] max-w-[65px] truncate">
-              {nextFruitConfig.name}
-            </span>
-          </div>
-          <div
-            className="w-7 h-7 rounded-full flex items-center justify-center p-0.5 border shadow-sm"
-            style={{
-              borderColor: nextFruitConfig.color,
-              backgroundColor: '#FFFFFF',
-            }}>
-            <FruitBadgeIcon
-              tier={nextFruitConfig}
-              assetUrl={ASSETS_MANIFEST[nextFruitConfig.assetKey]}
-              imageLoaded={Boolean(
-                assetsReady && assets[nextFruitConfig.assetKey],
+        {/* Center: Tactical HOLD Slot + NEXT Fruit Badge */}
+        <div className="flex items-center gap-1">
+          <button
+            onClick={swapHoldFruit}
+            disabled={!canSwapHold || gameState.status !== 'PLAYING'}
+            title="Hold / Swap Fruit (C or Shift, once per drop)"
+            className={`flex items-center gap-1 px-2 py-1 rounded-2xl border shadow-sm transition-all cursor-pointer active:scale-95 ${
+              canSwapHold && gameState.status === 'PLAYING'
+                ? 'bg-[#FAF3E7] hover:bg-[#F3E3CF] border-[#C89666]'
+                : 'bg-[#FAF3E7]/55 border-[#D4A373]/60 opacity-65 cursor-not-allowed'
+            }`}>
+            <div className="flex flex-col items-center">
+              <span className="text-[8px] uppercase font-extrabold text-[#9A6B42] leading-none flex items-center gap-0.5">
+                HOLD <ArrowLeftRight size={8} />
+              </span>
+              <span className="hidden sm:inline text-[10px] font-bold text-[#4A2810] max-w-[52px] truncate">
+                {heldItemMeta ? heldItemMeta.name : 'Empty'}
+              </span>
+            </div>
+            <div
+              className="w-7 h-7 rounded-full flex items-center justify-center p-0.5 border shadow-xs"
+              style={{
+                borderColor: heldItemMeta ? heldItemMeta.color : '#C89666',
+                borderStyle: heldItemMeta ? 'solid' : 'dashed',
+                backgroundColor: heldItemMeta ? '#FFFFFF' : '#F5ECE0',
+              }}>
+              {heldItem && heldItemMeta ? (
+                <FruitBadgeIcon
+                  tier={heldItemMeta.tierConfig}
+                  special={heldItem.special}
+                  assetUrl={ASSETS_MANIFEST[heldItemMeta.tierConfig.assetKey]}
+                  imageLoaded={Boolean(
+                    assetsReady && assets[heldItemMeta.tierConfig.assetKey],
+                  )}
+                  size={22}
+                />
+              ) : (
+                <span className="text-[9px] font-extrabold text-[#A67C52]">
+                  C
+                </span>
               )}
-              size={24}
-            />
+            </div>
+          </button>
+
+          <div className="flex items-center gap-1 bg-[#FAF3E7] px-2 py-1 rounded-2xl border border-[#D4A373] shadow-sm">
+            <div className="flex flex-col items-center">
+              <span className="text-[8px] uppercase font-extrabold text-[#9A6B42] leading-none">
+                NEXT
+              </span>
+              <span className="hidden sm:inline text-[10px] font-bold text-[#4A2810] max-w-[58px] truncate">
+                {nextItemMeta.name}
+              </span>
+            </div>
+            <div
+              className="w-7 h-7 rounded-full flex items-center justify-center p-0.5 border shadow-sm"
+              style={{
+                borderColor: nextItemMeta.color,
+                backgroundColor: '#FFFFFF',
+              }}>
+              <FruitBadgeIcon
+                tier={nextItemMeta.tierConfig}
+                special={nextItem.special}
+                assetUrl={ASSETS_MANIFEST[nextItemMeta.tierConfig.assetKey]}
+                imageLoaded={Boolean(
+                  assetsReady && assets[nextItemMeta.tierConfig.assetKey],
+                )}
+                size={22}
+              />
+            </div>
           </div>
         </div>
 
-        {/* Powerups: Anti-Gravity & Magnet Action Buttons */}
-        <div className="flex items-center gap-1.5">
-          {/* Anti-Gravity Powerup Button */}
+        {/* Powerups: Merge-Charged Zero-G & Magnet Action Buttons */}
+        <div className="flex items-center gap-1">
+          {/* Anti-Gravity Merge-Charged Button */}
           <button
             onClick={activateAntiGravity}
             disabled={
-              antiGravityCooldown > 0 ||
+              antiGravityCharge < 100 ||
               antiGravityActive ||
               gameState.status !== 'PLAYING'
             }
-            title="Zero-G Anti-Gravity (Z / 1)"
-            className={`h-9 px-2.5 rounded-xl border font-bold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-sm active:scale-95 ${
+            title="Zero-G Anti-Gravity (Z / 1) — Charged by merging fruits!"
+            className={`relative overflow-hidden h-9 px-2 rounded-xl border font-bold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-sm active:scale-95 ${
               antiGravityActive
                 ? 'bg-purple-600 text-white border-purple-400 animate-pulse ring-2 ring-purple-300'
-                : antiGravityCooldown > 0
-                ? 'bg-purple-100/60 text-purple-400 border-purple-200 cursor-not-allowed'
-                : 'bg-purple-50 hover:bg-purple-100 text-purple-800 border-purple-300 hover:border-purple-400'
+                : antiGravityCharge < 100
+                ? 'bg-purple-50/80 text-purple-600 border-purple-200 cursor-not-allowed'
+                : 'bg-purple-100 hover:bg-purple-200 text-purple-900 border-purple-400 ring-1 ring-purple-300'
             }`}>
+            {!antiGravityActive && antiGravityCharge < 100 && (
+              <div
+                className="absolute inset-y-0 left-0 bg-purple-300/45 transition-all duration-200 pointer-events-none"
+                style={{width: `${antiGravityCharge}%`}}
+              />
+            )}
             <Compass
-              size={15}
-              className={antiGravityActive ? 'animate-spin' : 'text-purple-600'}
+              size={14}
+              className={`relative z-10 ${
+                antiGravityActive ? 'animate-spin text-white' : 'text-purple-700'
+              }`}
             />
-            <span className="font-extrabold text-[11px]">
+            <span className="relative z-10 font-extrabold text-[10px] md:text-[11px]">
               {antiGravityActive
                 ? `${antiGravityActiveSec}s`
-                : antiGravityCooldown > 0
-                ? `${antiGravityCooldown}s`
+                : antiGravityCharge < 100
+                ? `${antiGravityCharge}%`
                 : 'Zero-G'}
             </span>
           </button>
 
-          {/* Magnet Powerup Button */}
+          {/* Magnet Merge-Charged Button */}
           <button
             onClick={activateMagnet}
             disabled={
-              magnetCooldown > 0 ||
+              magnetCharge < 100 ||
               magnetActive ||
               gameState.status !== 'PLAYING'
             }
-            title="Magnet Powerup (M / 2)"
-            className={`h-9 px-2.5 rounded-xl border font-bold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-sm active:scale-95 ${
+            title="Magnet Beam (M / 2) — Charged by merging fruits!"
+            className={`relative overflow-hidden h-9 px-2 rounded-xl border font-bold text-xs flex items-center gap-1 transition-all cursor-pointer shadow-sm active:scale-95 ${
               magnetActive
                 ? 'bg-amber-500 text-white border-amber-300 animate-pulse ring-2 ring-amber-300'
-                : magnetCooldown > 0
-                ? 'bg-amber-100/60 text-amber-400 border-amber-200 cursor-not-allowed'
-                : 'bg-amber-50 hover:bg-amber-100 text-amber-900 border-amber-300 hover:border-amber-400'
+                : magnetCharge < 100
+                ? 'bg-amber-50/80 text-amber-700 border-amber-200 cursor-not-allowed'
+                : 'bg-amber-100 hover:bg-amber-200 text-amber-950 border-amber-400 ring-1 ring-amber-300'
             }`}>
-            <Zap size={15} className="text-amber-600" />
-            <span className="font-extrabold text-[11px]">
+            {!magnetActive && magnetCharge < 100 && (
+              <div
+                className="absolute inset-y-0 left-0 bg-amber-300/50 transition-all duration-200 pointer-events-none"
+                style={{width: `${magnetCharge}%`}}
+              />
+            )}
+            <Zap
+              size={14}
+              className={`relative z-10 ${
+                magnetActive ? 'text-white' : 'text-amber-600'
+              }`}
+            />
+            <span className="relative z-10 font-extrabold text-[10px] md:text-[11px]">
               {magnetActive
                 ? 'Pull!'
-                : magnetCooldown > 0
-                ? `${magnetCooldown}s`
+                : magnetCharge < 100
+                ? `${magnetCharge}%`
                 : 'Magnet'}
             </span>
           </button>
@@ -2894,8 +3871,8 @@ export default function App() {
         <div className="flex items-center justify-between text-[10px] md:text-xs text-[#7A502E] px-1">
           <span className="font-medium">
             {isMobile
-              ? '👆 Drag & Release to Drop'
-              : '🖱️ Move & Click • Space / ↓ • Z: Zero-G • M: Magnet'}
+              ? '👆 Drag & Drop • Tap HOLD to Swap'
+              : '🖱️ Aim & Click • Space: Drop • C: Hold • Z: Zero-G • M: Magnet'}
           </span>
           <span className="font-bold text-[#8C5832]">
             Evolve to 👑 King Durian!
@@ -2999,38 +3976,44 @@ export default function App() {
             <div className="w-full space-y-3 text-xs md:text-sm text-[#5C3A21] mb-6 overflow-y-auto max-h-[50vh] touch-auto">
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  1. Smart Aim &amp; Drop 🍒
+                  1. Smart Aim, Drop &amp; Hold Basket 🍒
                 </strong>
-                Move your mouse or drag your finger horizontally to aim with the
-                live landing preview—watch for the green ✨ MERGE! halo! Release
-                or tap anywhere to drop (or press Space / &darr;). Dropper
-                spawns are Tiers 1-5.
+                Drag or move to aim with the swept-circle preview—matching
+                targets light up with starry eyes and a ✨ MERGE! halo. Tap{' '}
+                <strong>HOLD</strong> (or press <strong>C / Shift</strong>) once
+                per turn to stash or swap a fruit for 2-step chain setups!
               </div>
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  2. Combos &amp; 13-Tier Evolution 🥒 &bull; 🍉 &bull; 👑
+                  2. Special Drops: 🌈 Rainbow Dew &amp; 🫧 Fizz Berry
                 </strong>
-                Chain rapid merges within the combo window for up to 3x bonus
-                points and shockwave blasts all the way to Tier 13 King Durian!
+                Hit a <strong>4x+ Combo</strong> or every 20 drops to earn a
+                Special Drop! <strong>Rainbow Dew</strong> upgrades any touched
+                fruit up to Tier 9 Peach (or grants a +250 Prismatic Bonus on
+                bigger fruits). <strong>Fizz Berry</strong> detonates when an
+                adjacent merge happens nearby, popping small clutter and
+                charging your meters!
               </div>
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  3. 🌀 Zero-G Anti-Gravity Power-Up
+                  3. Merge-Charged 🌀 Zero-G &amp; 🧲 Magnet
                 </strong>
-                Inverts gravity for 5 seconds! A ceiling barrier prevents fruit
-                escape, and danger-line game over is paused. Tap floating fruits
-                during Zero-G to launch them toward their matching twin!
+                Both abilities start at 100% and recharge strictly by{' '}
+                <strong>merging fruits</strong> (1.75x faster on 3x+ combos!).
+                Tap floating fruits during Zero-G to launch them toward their
+                twin, or fire Magnet to pull your highest-tier matching pair
+                together!
               </div>
 
               <div className="p-3 bg-[#FAF3E7] rounded-xl border border-[#D4A373]">
                 <strong className="block text-[#8C5832] mb-1">
-                  4. 🧲 Magnet Power-Up
+                  4. 📅 Daily Harvest &amp; 👑 King Durian
                 </strong>
-                Instantly locks onto the closest pair of your highest-tier
-                matching fruits and pulls them together with an electric tractor
-                beam!
+                Play Classic or compete in today&apos;s deterministic{' '}
+                <strong>Daily Harvest</strong> where everyone gets the exact
+                same sequence of drops, then copy your scorecard at the end!
               </div>
             </div>
 
@@ -3098,9 +4081,12 @@ export default function App() {
 
               {/* Restart current session */}
               <button
-                onClick={initGame}
+                onClick={() => initGame()}
                 className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#D97706] py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
-                <RotateCw size={18} /> Restart Session
+                <RotateCw size={18} /> Restart{' '}
+                {gameMode === 'DAILY'
+                  ? `Daily #${dailyInfo.dayNumber}`
+                  : 'Session'}
               </button>
 
               {/* Quit to main start menu */}
@@ -3133,25 +4119,37 @@ export default function App() {
               Cucumber, Watermelon, and the legendary King Durian!
             </p>
 
-            <div className="w-full space-y-3">
+            <div className="w-full space-y-2.5">
               <button
-                onClick={initGame}
+                onClick={() => initGame('CLASSIC')}
                 autoFocus
-                className="w-full bg-[#8C5832] hover:bg-[#724524] text-white py-4 rounded-2xl font-black text-lg md:text-xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 active:scale-98 cursor-pointer">
-                <Play size={24} />
-                PLAY GAME
+                className="w-full bg-[#8C5832] hover:bg-[#724524] text-white py-3.5 rounded-2xl font-black text-lg md:text-xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 active:scale-98 cursor-pointer">
+                <Play size={22} />
+                PLAY CLASSIC
+              </button>
+
+              <button
+                onClick={() => initGame('DAILY')}
+                className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white py-3 px-4 rounded-2xl font-extrabold text-sm md:text-base shadow-md transition-all flex items-center justify-between active:scale-98 cursor-pointer border-2 border-emerald-300/60">
+                <span className="flex items-center gap-2">
+                  <Calendar size={18} />
+                  <span>DAILY HARVEST #{dailyInfo.dayNumber}</span>
+                </span>
+                <span className="text-[11px] bg-black/25 px-2 py-0.5 rounded-full font-bold text-emerald-100">
+                  {dailyHighScore > 0 ? `Best: ${dailyHighScore}` : 'Same Seed!'}
+                </span>
               </button>
 
               <button
                 onClick={() => setIsHowToPlayOpen(true)}
-                className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] text-[#5C3A21] py-3 rounded-2xl font-bold text-sm border-2 border-[#D4A373] transition-all flex items-center justify-center gap-2 cursor-pointer">
+                className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] text-[#5C3A21] py-2.5 rounded-2xl font-bold text-sm border-2 border-[#D4A373] transition-all flex items-center justify-center gap-2 cursor-pointer">
                 <HelpCircle size={18} />
                 How to Play
               </button>
 
               <button
                 onClick={() => setIsEvolutionTreeOpen(true)}
-                className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] text-[#5C3A21] py-3 rounded-2xl font-bold text-sm border-2 border-[#D4A373] transition-all flex items-center justify-center gap-2 cursor-pointer">
+                className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] text-[#5C3A21] py-2.5 rounded-2xl font-bold text-sm border-2 border-[#D4A373] transition-all flex items-center justify-center gap-2 cursor-pointer">
                 <Sparkles size={18} className="text-[#F59E0B]" />
                 13-Tier Evolution Guide
               </button>
@@ -3164,14 +4162,20 @@ export default function App() {
       {gameState.status === 'GAME_OVER' && (
         <Overlay
           title="JAR OVERFLOW!"
-          description={`Final Score: ${gameState.score} • Best: ${Math.max(
-            highScore,
-            gameState.score,
-          )}`}
+          description={`${
+            gameMode === 'DAILY'
+              ? `Daily #${dailyInfo.dayNumber} Score`
+              : 'Final Score'
+          }: ${gameState.score} • Best: ${
+            gameMode === 'DAILY'
+              ? Math.max(dailyHighScore, gameState.score)
+              : Math.max(highScore, gameState.score)
+          }`}
           stats={sessionStats}
           actionLabel="TRY AGAIN"
-          onAction={initGame}
+          onAction={() => initGame()}
           icon={<RotateCw size={24} />}
+          extraFooter={shareFooterNode}
           tone="danger"
         />
       )}
@@ -3180,14 +4184,17 @@ export default function App() {
       {gameState.status === 'VICTORY' && (
         <Overlay
           title="👑 KING DURIAN CROWNED! 🎉"
-          description={`Supreme Fruit Master! Final Score: ${gameState.score}`}
+          description={`Supreme Fruit Master! ${
+            gameMode === 'DAILY' ? `Daily #${dailyInfo.dayNumber} ` : ''
+          }Score: ${gameState.score}`}
           stats={sessionStats}
           actionLabel="KEEP PLAYING (ENDLESS)"
           onAction={resumeEndlessMode}
           icon={<Play size={22} />}
           secondaryActionLabel="NEW GAME"
-          onSecondaryAction={initGame}
+          onSecondaryAction={() => initGame()}
           secondaryIcon={<RotateCw size={20} />}
+          extraFooter={shareFooterNode}
           tone="victory"
         />
       )}
