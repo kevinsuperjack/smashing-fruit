@@ -1041,10 +1041,159 @@ class GameAudio {
       });
     });
   }
+
+  playMagicRescuePop() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.015);
+    const notes = [523.25, 659.25, 783.99, 987.77, 1046.5, 1318.51];
+    notes.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.05, {
+        type: 'sine',
+        freq: freq * v,
+        dur: 0.22,
+        gain: 0.075,
+      });
+    });
+  }
+
+  playLullabyChime() {
+    const b = this.begin();
+    if (!b) return;
+    // Soft celesta music-box bedtime cadence
+    const lullaby = [1046.5, 880.0, 783.99, 659.25, 523.25];
+    lullaby.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.26, {
+        type: 'sine',
+        freq,
+        dur: 0.55,
+        gain: 0.065,
+      });
+    });
+  }
 }
 
 /** Shared singleton — import and use anywhere. */
 export const gameAudio = new GameAudio();
+
+const KID_COUNT_WORDS = [
+  'One',
+  'Two',
+  'Three',
+  'Four',
+  'Five',
+  'Six',
+  'Seven',
+  'Eight',
+  'Nine',
+  'Ten',
+];
+
+/**
+ * Preschool-friendly Web Speech API helper for Little Explorer (Ages 3–5) Mode.
+ * Enforces a gentle cadence guard so rapid tapping never causes overlapping speech.
+ */
+class KidVoice {
+  private enabled = true;
+  private lastSpokenAt = 0;
+  private preferredVoice: SpeechSynthesisVoice | null = null;
+
+  constructor() {
+    if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+      const loadVoices = () => {
+        try {
+          const voices = window.speechSynthesis.getVoices();
+          if (!voices || voices.length === 0) return;
+          const english = voices.filter((v) =>
+            v.lang.toLowerCase().startsWith('en'),
+          );
+          const warmNames = [
+            'samantha',
+            'karen',
+            'moira',
+            'victoria',
+            'tessa',
+            'google us english',
+            'ava',
+            'allison',
+          ];
+          this.preferredVoice =
+            english.find((v) =>
+              warmNames.some((n) => v.name.toLowerCase().includes(n)),
+            ) ||
+            english.find((v) => v.localService) ||
+            english[0] ||
+            null;
+        } catch {}
+      };
+      loadVoices();
+      try {
+        window.speechSynthesis.addEventListener?.('voiceschanged', loadVoices);
+      } catch {}
+    }
+  }
+
+  setEnabled(enabled: boolean) {
+    this.enabled = enabled;
+    if (!enabled) {
+      this.cancel();
+    }
+  }
+
+  cancel() {
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    try {
+      window.speechSynthesis.cancel();
+    } catch {}
+  }
+
+  speakMerge(count1To10: number, fruitPhrase: string, isHighTier = false) {
+    if (!this.enabled) return;
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+
+    const now = performance.now();
+    const isMilestoneCount = count1To10 === 5 || count1To10 === 10;
+    if (!isHighTier && !isMilestoneCount && now - this.lastSpokenAt < 1150) {
+      return;
+    }
+
+    const numWord =
+      KID_COUNT_WORDS[Math.max(0, Math.min(9, count1To10 - 1))] || 'One';
+    const praise =
+      count1To10 === 10
+        ? ' Yay, ten!'
+        : count1To10 === 5
+        ? ' High five!'
+        : '';
+    this.utter(`${numWord}! ${fruitPhrase}${praise}`, 0.96, 1.14);
+    this.lastSpokenAt = now;
+  }
+
+  speakPriority(text: string, slowBedtime = false) {
+    if (!this.enabled) return;
+    if (typeof window === 'undefined' || !('speechSynthesis' in window)) return;
+    this.lastSpokenAt = performance.now();
+    this.utter(text, slowBedtime ? 0.84 : 0.96, slowBedtime ? 1.03 : 1.15);
+  }
+
+  private utter(text: string, rate: number, pitch: number) {
+    try {
+      const synth = window.speechSynthesis;
+      synth.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      if (this.preferredVoice) {
+        u.voice = this.preferredVoice;
+      }
+      u.lang = this.preferredVoice?.lang || 'en-US';
+      u.rate = rate;
+      u.pitch = pitch;
+      u.volume = 0.92;
+      synth.speak(u);
+    } catch {}
+  }
+}
+
+export const kidVoice = new KidVoice();
 
 // ============================================================================
 // GENERAL UTILITIES & MATH HELPERS

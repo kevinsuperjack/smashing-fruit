@@ -221,6 +221,28 @@ export const FRUIT_TIERS: FruitTier[] = [
 ];
 
 /**
+ * Preschool-friendly vocabulary & color/size spoken phrases for Little Explorer (Ages 3–5) Mode.
+ */
+export const KID_FRUIT_LABELS: Record<
+  number,
+  {name: string; spokenPhrase: string}
+> = {
+  1: {name: 'Cherry', spokenPhrase: 'Red Cherry!'},
+  2: {name: 'Strawberry', spokenPhrase: 'Sweet Strawberry!'},
+  3: {name: 'Grapes', spokenPhrase: 'Purple Grapes!'},
+  4: {name: 'Tangerine', spokenPhrase: 'Juicy Tangerine!'},
+  5: {name: 'Orange', spokenPhrase: 'Sunny Orange!'},
+  6: {name: 'Cucumber', spokenPhrase: 'Crunchy Green Cucumber!'},
+  7: {name: 'Apple', spokenPhrase: 'Shiny Red Apple!'},
+  8: {name: 'Pear', spokenPhrase: 'Green Pear!'},
+  9: {name: 'Peach', spokenPhrase: 'Fuzzy Pink Peach!'},
+  10: {name: 'Pineapple', spokenPhrase: 'Big Yellow Pineapple!'},
+  11: {name: 'Melon', spokenPhrase: 'Round Sweet Melon!'},
+  12: {name: 'Watermelon', spokenPhrase: 'Giant Green Watermelon!'},
+  13: {name: 'King Durian', spokenPhrase: 'Golden King Durian!'},
+};
+
+/**
  * Configuration for the game.
  */
 export const CONFIG = {
@@ -426,6 +448,24 @@ export const CONFIG = {
     type: 'number',
     label: 'Juice Fever Power-Up Charge Multiplier',
     group: 'Rules',
+  },
+  parentHoldDurationMs: {
+    value: 1500,
+    type: 'number',
+    label: 'Grown-Up Menu Hold Duration (ms)',
+    group: 'Kids',
+  },
+  defaultSleepyTimerMinutes: {
+    value: 10,
+    type: 'number',
+    label: 'Default Cozy Sleepy Timer (minutes)',
+    group: 'Kids',
+  },
+  sleepyWindDownSeconds: {
+    value: 30,
+    type: 'number',
+    label: 'Sleepy Wind-Down Lullaby Lead Time (s)',
+    group: 'Kids',
   },
 
   // Assets metadata references

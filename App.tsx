@@ -17,6 +17,8 @@ import {
   Calendar,
   Copy,
   Check,
+  Lock,
+  Moon,
 } from 'lucide-react';
 import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
 import {
@@ -25,6 +27,7 @@ import {
   FRUIT_TIERS,
   FruitTier,
   getConfig,
+  KID_FRUIT_LABELS,
   SPECIAL_DROPS,
   SpecialDropKind,
   THEME,
@@ -38,6 +41,7 @@ import {
   gameAudio,
   GameState,
   getDailyHarvestInfo,
+  kidVoice,
   MenuOverlay,
   Overlay,
   prepareCanvas,
@@ -56,8 +60,12 @@ const HIGH_SCORE_STORAGE_KEY = 'juicydrop_highscore_v2';
 const DAILY_HIGH_SCORE_PREFIX = 'juicydrop_daily_best_v1_';
 const SFX_MUTE_STORAGE_KEY = 'juicydrop_sfx_muted_v1';
 const MUSIC_MUTE_STORAGE_KEY = 'juicydrop_music_muted_v1';
+const KID_VOICE_STORAGE_KEY = 'juicydrop_kid_voice_v1';
+const SLEEPY_TIMER_STORAGE_KEY = 'juicydrop_sleepy_timer_min_v1';
 
-type GameMode = 'CLASSIC' | 'DAILY';
+type GameMode = 'CLASSIC' | 'DAILY' | 'EXPLORER';
+type SleepyTimerOption = 0 | 5 | 10 | 15;
+type HoldGateTarget = 'menu' | 'extend' | 'exit';
 type FruitExpression =
   | 'happy'
   | 'bouncy'
@@ -154,7 +162,10 @@ interface MergeQueueEntry {
   kind: 'normal' | 'rainbow' | 'fizz_pair';
 }
 
-function getDropItemDetails(item: DropItem): {
+function getDropItemDetails(
+  item: DropItem,
+  mode: GameMode = 'CLASSIC',
+): {
   name: string;
   radius: number;
   color: string;
@@ -170,19 +181,36 @@ function getDropItemDetails(item: DropItem): {
     };
   }
   const tierConfig = FRUIT_TIERS[item.tier - 1] || FRUIT_TIERS[0];
+  const isExplorer = mode === 'EXPLORER';
+  const radiusScale =
+    isExplorer && item.tier === 1
+      ? 1.18
+      : isExplorer && item.tier === 2
+      ? 1.14
+      : 1.0;
   return {
-    name: tierConfig.name,
-    radius: tierConfig.radius,
+    name: isExplorer
+      ? KID_FRUIT_LABELS[item.tier]?.name || tierConfig.name
+      : tierConfig.name,
+    radius: Math.round(tierConfig.radius * radiusScale),
     color: tierConfig.color,
     tierConfig,
   };
 }
 
-function getFruitEntityRadius(fruit: FruitEntity): number {
+function getFruitEntityRadius(
+  fruit: FruitEntity,
+  mode: GameMode = 'CLASSIC',
+): number {
   if (fruit.special !== 'none') {
     return SPECIAL_DROPS[fruit.special].radius;
   }
-  return FRUIT_TIERS[fruit.tier - 1]?.radius || 22;
+  const baseRadius = FRUIT_TIERS[fruit.tier - 1]?.radius || 22;
+  if (mode === 'EXPLORER') {
+    if (fruit.tier === 1) return Math.round(baseRadius * 1.18);
+    if (fruit.tier === 2) return Math.round(baseRadius * 1.14);
+  }
+  return baseRadius;
 }
 
 // Active Magnet pull state
@@ -286,6 +314,38 @@ export default function App() {
   const [feversTriggered, setFeversTriggered] = useState(0);
   const [isFeverActive, setIsFeverActive] = useState(false);
 
+  // Little Explorer (Ages 3–5) Early Educator States & Grown-Up Controls
+  const [kidVoiceEnabled, setKidVoiceEnabled] = useState<boolean>(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      const saved = localStorage.getItem(KID_VOICE_STORAGE_KEY);
+      return saved === null ? true : saved !== '0';
+    } catch {
+      return true;
+    }
+  });
+  const [sleepyTimerMinutes, setSleepyTimerMinutes] =
+    useState<SleepyTimerOption>(() => {
+      if (typeof window === 'undefined') return 10;
+      try {
+        const saved = localStorage.getItem(SLEEPY_TIMER_STORAGE_KEY);
+        if (saved === '0') return 0;
+        if (saved === '5') return 5;
+        if (saved === '10') return 10;
+        if (saved === '15') return 15;
+        return 10;
+      } catch {
+        return 10;
+      }
+    });
+  const [sleepyRemainingSec, setSleepyRemainingSec] = useState<number>(600);
+  const [isSleepyWindDown, setIsSleepyWindDown] = useState<boolean>(false);
+  const [isSleepyBedtime, setIsSleepyBedtime] = useState<boolean>(false);
+  const [activeHoldTarget, setActiveHoldTarget] =
+    useState<HoldGateTarget | null>(null);
+  const [parentHoldProgress, setParentHoldProgress] = useState<number>(0);
+  const [showParentHoldHint, setShowParentHoldHint] = useState<boolean>(false);
+
   // Merge-Charged Power-up States (0..100%, start ready at 100%)
   const [antiGravityCharge, setAntiGravityCharge] = useState<number>(100);
   const [antiGravityActive, setAntiGravityActive] = useState<boolean>(false);
@@ -317,6 +377,16 @@ export default function App() {
   isEvolutionTreeOpenRef.current = isEvolutionTreeOpen;
   const isEndlessModeRef = useRef(isEndlessMode);
   isEndlessModeRef.current = isEndlessMode;
+  const sleepyTimerMinutesRef = useRef<SleepyTimerOption>(sleepyTimerMinutes);
+  sleepyTimerMinutesRef.current = sleepyTimerMinutes;
+  const sleepyRemainingSecRef = useRef<number>(sleepyTimerMinutes * 60);
+  const lastDisplayedSleepySecRef = useRef<number>(sleepyTimerMinutes * 60);
+  const isSleepyWindDownRef = useRef<boolean>(false);
+  const isSleepyBedtimeRef = useRef<boolean>(isSleepyBedtime);
+  isSleepyBedtimeRef.current = isSleepyBedtime;
+  const kidCountRef = useRef<number>(0);
+  const holdRafRef = useRef<number>(0);
+  const holdHintTimerRef = useRef<number>(0);
 
   // Sync high score & daily best to localStorage
   const updateScoreWithHighScore = useCallback(
@@ -363,6 +433,109 @@ export default function App() {
       localStorage.setItem(MUSIC_MUTE_STORAGE_KEY, musicMuted ? '1' : '0');
     } catch {}
   }, [musicMuted]);
+
+  useEffect(() => {
+    kidVoice.setEnabled(kidVoiceEnabled && !sfxMuted);
+    try {
+      localStorage.setItem(KID_VOICE_STORAGE_KEY, kidVoiceEnabled ? '1' : '0');
+    } catch {}
+  }, [kidVoiceEnabled, sfxMuted]);
+
+  // Update Cozy Sleepy Timer choice (persists & updates active session)
+  const handleSleepyTimerSelect = useCallback((mins: SleepyTimerOption) => {
+    setSleepyTimerMinutes(mins);
+    sleepyTimerMinutesRef.current = mins;
+    try {
+      localStorage.setItem(SLEEPY_TIMER_STORAGE_KEY, mins.toString());
+    } catch {}
+    const totalSec = mins * 60;
+    sleepyRemainingSecRef.current = totalSec;
+    lastDisplayedSleepySecRef.current = totalSec;
+    setSleepyRemainingSec(totalSec);
+    isSleepyWindDownRef.current = false;
+    setIsSleepyWindDown(false);
+    isSleepyBedtimeRef.current = false;
+    setIsSleepyBedtime(false);
+    gameAudio.playConfirmSelect();
+  }, []);
+
+  // Grown-Up +5 min Bedtime Extension
+  const extendSleepyTimerFiveMin = useCallback(() => {
+    const addedSec = 5 * 60;
+    if (sleepyTimerMinutesRef.current === 0) {
+      setSleepyTimerMinutes(5);
+      sleepyTimerMinutesRef.current = 5;
+    }
+    sleepyRemainingSecRef.current = addedSec;
+    lastDisplayedSleepySecRef.current = addedSec;
+    setSleepyRemainingSec(addedSec);
+    isSleepyWindDownRef.current = false;
+    setIsSleepyWindDown(false);
+    isSleepyBedtimeRef.current = false;
+    setIsSleepyBedtime(false);
+    sessionPlayStartRef.current = performance.now();
+    gameAudio.playPowerupChime();
+    if (gameModeRef.current === 'EXPLORER') {
+      kidVoice.speakPriority('Good morning fruits! Five more minutes!');
+    }
+  }, []);
+
+  // 1.5-second Press-and-Hold Grown-Up Gate for Menu / Bedtime Exit
+  const startParentHold = useCallback(
+    (target: HoldGateTarget, onUnlocked: () => void) => {
+      if (holdRafRef.current) {
+        cancelAnimationFrame(holdRafRef.current);
+      }
+      const holdMs =
+        (getConfig('parentHoldDurationMs') as number) || 1500;
+      const startedAt = performance.now();
+      setActiveHoldTarget(target);
+      setParentHoldProgress(4);
+
+      const tick = (now: number) => {
+        const pct = Math.min(100, ((now - startedAt) / holdMs) * 100);
+        setParentHoldProgress(pct);
+        if (pct >= 100) {
+          holdRafRef.current = 0;
+          setActiveHoldTarget(null);
+          setParentHoldProgress(0);
+          setShowParentHoldHint(false);
+          gameAudio.playConfirmSelect();
+          onUnlocked();
+          return;
+        }
+        holdRafRef.current = requestAnimationFrame(tick);
+      };
+
+      holdRafRef.current = requestAnimationFrame(tick);
+    },
+    [],
+  );
+
+  const cancelParentHold = useCallback((triggerHint = true) => {
+    if (!holdRafRef.current) return;
+    cancelAnimationFrame(holdRafRef.current);
+    holdRafRef.current = 0;
+    setActiveHoldTarget(null);
+    setParentHoldProgress(0);
+    if (triggerHint) {
+      setShowParentHoldHint(true);
+      if (holdHintTimerRef.current) {
+        window.clearTimeout(holdHintTimerRef.current);
+      }
+      holdHintTimerRef.current = window.setTimeout(() => {
+        setShowParentHoldHint(false);
+      }, 1900);
+    }
+  }, []);
+
+  useEffect(() => {
+    return () => {
+      if (holdRafRef.current) cancelAnimationFrame(holdRafRef.current);
+      if (holdHintTimerRef.current) clearTimeout(holdHintTimerRef.current);
+      kidVoice.cancel();
+    };
+  }, []);
 
   useEffect(() => {
     const onPlatformMute = (e: Event) => {
@@ -464,15 +637,29 @@ export default function App() {
   const generateNextSmoothieOrder = useCallback((): SmoothieOrder => {
     const completed = ordersCompletedRef.current;
     const rng = orderRngRef.current;
-    const slotCount =
-      completed < 2 ? 2 : completed < 5 ? (rng() < 0.45 ? 2 : 3) : 3;
+    const isExplorer = gameModeRef.current === 'EXPLORER';
 
-    const maxTargetTier =
-      completed < 2
-        ? 4 // Strawberry, Grape, Dekopon
-        : completed < 5
-        ? Math.min(6, Math.max(4, highestTierRef.current + 1))
-        : Math.min(8, Math.max(5, highestTierRef.current + 1));
+    const slotCount = isExplorer
+      ? completed === 0
+        ? 1
+        : 2
+      : completed < 2
+      ? 2
+      : completed < 5
+      ? rng() < 0.45
+        ? 2
+        : 3
+      : 3;
+
+    const maxTargetTier = isExplorer
+      ? completed === 0
+        ? 3 // Strawberry or Grapes on first preschool order!
+        : Math.min(5, Math.max(3, highestTierRef.current + 1))
+      : completed < 2
+      ? 4 // Strawberry, Grape, Dekopon
+      : completed < 5
+      ? Math.min(6, Math.max(4, highestTierRef.current + 1))
+      : Math.min(8, Math.max(5, highestTierRef.current + 1));
 
     // Weighted toward approachable tiers so tickets stay breezy and relaxing
     const candidateTiers: Array<{tier: number; weight: number}> = [];
@@ -693,6 +880,7 @@ export default function App() {
   const activateAntiGravity = useCallback(() => {
     if (gameStateRef.current.status !== 'PLAYING') return;
     if (
+      isSleepyBedtimeRef.current ||
       isMenuOpenRef.current ||
       isHowToPlayOpenRef.current ||
       isEvolutionTreeOpenRef.current
@@ -734,6 +922,7 @@ export default function App() {
   const activateMagnet = useCallback(() => {
     if (gameStateRef.current.status !== 'PLAYING') return;
     if (
+      isSleepyBedtimeRef.current ||
       isMenuOpenRef.current ||
       isHowToPlayOpenRef.current ||
       isEvolutionTreeOpenRef.current
@@ -817,6 +1006,7 @@ export default function App() {
   const swapHoldFruit = useCallback(() => {
     if (gameStateRef.current.status !== 'PLAYING') return;
     if (
+      isSleepyBedtimeRef.current ||
       isMenuOpenRef.current ||
       isHowToPlayOpenRef.current ||
       isEvolutionTreeOpenRef.current
@@ -858,6 +1048,7 @@ export default function App() {
   const dropFruit = useCallback(() => {
     if (gameStateRef.current.status !== 'PLAYING') return;
     if (
+      isSleepyBedtimeRef.current ||
       isMenuOpenRef.current ||
       isHowToPlayOpenRef.current ||
       isEvolutionTreeOpenRef.current
@@ -866,9 +1057,14 @@ export default function App() {
     }
 
     const now = performance.now();
+    const isExplorer = gameModeRef.current === 'EXPLORER';
     const cooldown =
       feverTimerRef.current > 0
-        ? (getConfig('feverDropCooldownMs') as number) || 280
+        ? isExplorer
+          ? 240
+          : (getConfig('feverDropCooldownMs') as number) || 280
+        : isExplorer
+        ? 320
         : (getConfig('dropCooldownMs') as number) || 450;
     if (now - lastDropTimeRef.current < cooldown) return;
     if (!engineRef.current) return;
@@ -876,7 +1072,10 @@ export default function App() {
     gameAudio.resume();
 
     const droppedItem = currentItemRef.current;
-    const {radius, tierConfig} = getDropItemDetails(droppedItem);
+    const {radius, tierConfig} = getDropItemDetails(
+      droppedItem,
+      gameModeRef.current,
+    );
 
     // Clamp drop position strictly within jar walls
     const dropX = Math.max(
@@ -1012,11 +1211,13 @@ export default function App() {
     gameAudio.playPowerupChime();
   }, []);
 
-  // Initialize/Reset Game Session (supports 'CLASSIC' or date-seeded 'DAILY')
+  // Initialize/Reset Game Session (supports 'CLASSIC', 'DAILY', or 'EXPLORER' Ages 3–5)
   const initGame = useCallback(
     (requestedMode?: GameMode | unknown) => {
       const activeMode: GameMode =
-        requestedMode === 'DAILY' || requestedMode === 'CLASSIC'
+        requestedMode === 'DAILY' ||
+        requestedMode === 'CLASSIC' ||
+        requestedMode === 'EXPLORER'
           ? requestedMode
           : gameModeRef.current;
 
@@ -1263,6 +1464,13 @@ export default function App() {
       ordersCompletedRef.current = 0;
       feversTriggeredRef.current = 0;
       feverTimerRef.current = 0;
+      kidCountRef.current = 0;
+      const startSleepySec =
+        activeMode === 'EXPLORER' ? sleepyTimerMinutesRef.current * 60 : 0;
+      sleepyRemainingSecRef.current = startSleepySec;
+      lastDisplayedSleepySecRef.current = startSleepySec;
+      isSleepyWindDownRef.current = false;
+      isSleepyBedtimeRef.current = false;
       currentOrderRef.current = generateNextSmoothieOrder();
       sessionPlayStartRef.current = startNow;
       lastDropTimeRef.current = startNow - 600;
@@ -1276,6 +1484,9 @@ export default function App() {
       setOrdersCompleted(0);
       setFeversTriggered(0);
       setIsFeverActive(false);
+      setSleepyRemainingSec(startSleepySec);
+      setIsSleepyWindDown(false);
+      setIsSleepyBedtime(false);
       setAntiGravityActive(false);
       setAntiGravityActiveSec(0);
       setAntiGravityCharge(100);
@@ -1305,6 +1516,11 @@ export default function App() {
 
       // Ensure audio context unlocks cleanly
       gameAudio.resume();
+      if (activeMode === 'EXPLORER') {
+        kidVoice.speakPriority("Let's drop yummy fruits!");
+      } else {
+        kidVoice.cancel();
+      }
 
       if (sdk) {
         sdk.startGame();
@@ -1355,7 +1571,7 @@ export default function App() {
     let clickedFruit: FruitEntity | null = null;
     fruitsRef.current.forEach((fruit) => {
       if (fruit.merged || fruit.special !== 'none') return;
-      const radius = getFruitEntityRadius(fruit);
+      const radius = getFruitEntityRadius(fruit, gameModeRef.current);
       const dx = fruit.body.position.x - tapX;
       const dy = fruit.body.position.y - tapY;
       if (Math.hypot(dx, dy) <= radius + 10) {
@@ -1414,7 +1630,7 @@ export default function App() {
 
   // Direct canvas pointer event helpers with pointer capture & Zero-G tap isolation
   const handleCanvasPointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (gameState.status !== 'PLAYING') return;
+    if (gameState.status !== 'PLAYING' || isSleepyBedtime) return;
     if (isMenuOpen || isHowToPlayOpen || isEvolutionTreeOpen) return;
 
     try {
@@ -1441,7 +1657,7 @@ export default function App() {
   };
 
   const handleCanvasPointerMove = (e: React.PointerEvent<HTMLCanvasElement>) => {
-    if (gameState.status !== 'PLAYING') return;
+    if (gameState.status !== 'PLAYING' || isSleepyBedtime) return;
     if (isMenuOpen || isHowToPlayOpen || isEvolutionTreeOpen) return;
     if (zeroGTapHandledRef.current) return;
 
@@ -1465,7 +1681,7 @@ export default function App() {
       return;
     }
 
-    if (gameState.status !== 'PLAYING') {
+    if (gameState.status !== 'PLAYING' || isSleepyBedtime) {
       isPointerDownRef.current = false;
       return;
     }
@@ -1505,9 +1721,108 @@ export default function App() {
       return;
     }
 
+    // In Little Explorer Bedtime Finale, freeze physics & decay transient VFX gently
+    if (isSleepyBedtimeRef.current) {
+      for (let i = shockwavesRef.current.length - 1; i >= 0; i--) {
+        const sw = shockwavesRef.current[i];
+        sw.life += deltaTime;
+        const t = Math.min(1, sw.life / sw.maxLife);
+        sw.radius = sw.maxRadius * (0.2 + 0.8 * (1 - Math.pow(1 - t, 3)));
+        sw.alpha = Math.max(0, (1 - t) * 0.85);
+        if (sw.life >= sw.maxLife) shockwavesRef.current.splice(i, 1);
+      }
+      for (let i = particlesRef.current.length - 1; i >= 0; i--) {
+        const p = particlesRef.current[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life += deltaTime;
+        p.alpha = Math.max(0, 1 - p.life / p.maxLife);
+        if (p.life >= p.maxLife) particlesRef.current.splice(i, 1);
+      }
+      for (let i = scorePopupsRef.current.length - 1; i >= 0; i--) {
+        const s = scorePopupsRef.current[i];
+        s.y -= 35 * deltaTime;
+        s.life += deltaTime;
+        s.alpha = Math.max(0, 1 - s.life / s.maxLife);
+        if (s.life >= s.maxLife) scorePopupsRef.current.splice(i, 1);
+      }
+      return;
+    }
+
     const input = inputRef.current;
     const now = performance.now();
     const defaultGravity = (getConfig('gravityY') as number) || 1.5;
+    const isExplorerMode = gameModeRef.current === 'EXPLORER';
+
+    // 0.a Cozy "Sleepy Fruits" Parent Screen-Time Countdown (Little Explorer Mode)
+    if (isExplorerMode && sleepyTimerMinutesRef.current > 0) {
+      sleepyRemainingSecRef.current = Math.max(
+        0,
+        sleepyRemainingSecRef.current - deltaTime,
+      );
+      const dispSec = Math.ceil(sleepyRemainingSecRef.current);
+      if (dispSec !== lastDisplayedSleepySecRef.current) {
+        lastDisplayedSleepySecRef.current = dispSec;
+        setSleepyRemainingSec(dispSec);
+      }
+
+      const windDownThreshold =
+        (getConfig('sleepyWindDownSeconds') as number) || 30;
+      const shouldWindDown =
+        sleepyRemainingSecRef.current > 0 &&
+        sleepyRemainingSecRef.current <= windDownThreshold;
+
+      if (shouldWindDown !== isSleepyWindDownRef.current) {
+        isSleepyWindDownRef.current = shouldWindDown;
+        setIsSleepyWindDown(shouldWindDown);
+        if (shouldWindDown) {
+          kidVoice.speakPriority('Almost sleepy time for the fruits!');
+          spawnScorePopup(
+            canvasWidth / 2,
+            jarTop + 26,
+            '🌙 ALMOST SLEEPY TIME...',
+            '#C4B5FD',
+            22,
+            0.85,
+          );
+        }
+      }
+
+      // Soft floating twilight starlight motes during 30s wind-down
+      if (shouldWindDown && Math.random() < 0.16) {
+        particlesRef.current.push({
+          x: jarX + 28 + Math.random() * (jarWidth - 56),
+          y: jarBottom - 24 - Math.random() * (jarBottom - jarTop - 60),
+          vx: (Math.random() - 0.5) * 0.5,
+          vy: -0.55 - Math.random() * 0.55,
+          radius: 2.5 + Math.random() * 2.5,
+          color: Math.random() < 0.55 ? '#FDE68A' : '#C4B5FD',
+          alpha: 0.85,
+          life: 0,
+          maxLife: 1.4 + Math.random() * 0.6,
+          isZeroG: true,
+        });
+      }
+
+      if (sleepyRemainingSecRef.current <= 0) {
+        isSleepyWindDownRef.current = false;
+        isSleepyBedtimeRef.current = true;
+        setIsSleepyWindDown(false);
+        setIsSleepyBedtime(true);
+        fruitsRef.current.forEach((f) => {
+          f.expression = 'sleepy';
+          f.expressionTimer = 9999;
+          Matter.Body.setVelocity(f.body, {x: 0, y: 0});
+          Matter.Body.setAngularVelocity(f.body, 0);
+        });
+        gameAudio.playLullabyChime();
+        kidVoice.speakPriority(
+          'Shhh... the fruits are sleepy! Time for a cozy break. Night-night!',
+          true,
+        );
+        return;
+      }
+    }
 
     // 0. Decay Combo Timer & Screen Shake (Power-ups now recharge strictly via merges!)
     if (comboTimerRef.current > 0) {
@@ -1725,7 +2040,10 @@ export default function App() {
     }
 
     // Smooth lerp dropper position
-    const currentItemRadius = getDropItemDetails(currentItemRef.current).radius;
+    const currentItemRadius = getDropItemDetails(
+      currentItemRef.current,
+      gameModeRef.current,
+    ).radius;
     const minDropperX = jarX + currentItemRadius + 6;
     const maxDropperX = jarRight - currentItemRadius - 6;
     targetDropperXRef.current = Math.max(
@@ -1735,6 +2053,50 @@ export default function App() {
     dropperXRef.current +=
       (targetDropperXRef.current - dropperXRef.current) *
       Math.min(1, deltaTime * 24);
+
+    // 1.8 Gentle Twin-Magnet Motor Assist (Little Explorer Mode Only — helps nearly-touching twins kiss!)
+    if (
+      isExplorerMode &&
+      antiGravityTimerRef.current <= 0 &&
+      !activeMagnetRef.current &&
+      fruitsRef.current.size >= 2
+    ) {
+      const fruitArr = Array.from(fruitsRef.current.values());
+      for (let i = 0; i < fruitArr.length; i++) {
+        const fA = fruitArr[i];
+        if (fA.merged || fA.special !== 'none') continue;
+        const speedA = Math.hypot(fA.body.velocity.x, fA.body.velocity.y);
+        if (speedA > 2.2) continue;
+        const rA = getFruitEntityRadius(fA, 'EXPLORER');
+
+        for (let j = i + 1; j < fruitArr.length; j++) {
+          const fB = fruitArr[j];
+          if (fB.merged || fB.special !== 'none' || fB.tier !== fA.tier) {
+            continue;
+          }
+          const speedB = Math.hypot(fB.body.velocity.x, fB.body.velocity.y);
+          if (speedB > 2.2) continue;
+          const rB = getFruitEntityRadius(fB, 'EXPLORER');
+          const dx = fB.body.position.x - fA.body.position.x;
+          const dy = fB.body.position.y - fA.body.position.y;
+          const dist = Math.hypot(dx, dy);
+          const edgeGap = dist - (rA + rB);
+          if (dist > 1 && edgeGap > 0 && edgeGap <= 14) {
+            const nx = dx / dist;
+            const ny = dy / dist;
+            const nudge = 0.00085 * (1 - edgeGap / 14);
+            Matter.Body.applyForce(fA.body, fA.body.position, {
+              x: nx * nudge * fA.body.mass,
+              y: ny * nudge * fA.body.mass,
+            });
+            Matter.Body.applyForce(fB.body, fB.body.position, {
+              x: -nx * nudge * fB.body.mass,
+              y: -ny * nudge * fB.body.mass,
+            });
+          }
+        }
+      }
+    }
 
     // 2. Physics Step
     if (engineRef.current) {
@@ -1914,7 +2276,7 @@ export default function App() {
           mergeBlastCenters.push({
             x: midX,
             y: midY,
-            r: getFruitEntityRadius(fruitB),
+            r: getFruitEntityRadius(fruitB, gameModeRef.current),
           });
           return;
         }
@@ -2002,6 +2364,7 @@ export default function App() {
             ? (getConfig('feverScoreMultiplier') as number) || 2.0
             : 1.0;
         const earnedPoints = Math.round(basePts * comboMult * feverMult);
+        let prioritySpokenThisMerge = false;
 
         // Smoothie Order Checklist Progression (active when not in Juice Fever)
         if (feverTimerRef.current <= 0 && currentOrderRef.current) {
@@ -2080,6 +2443,10 @@ export default function App() {
                 }
 
                 gameAudio.playFeverStart();
+                if (isExplorerMode) {
+                  kidVoice.speakPriority('Juice Party! Woohoo!');
+                  prioritySpokenThisMerge = true;
+                }
                 screenShakeRef.current = Math.max(screenShakeRef.current, 7.5);
                 spawnShockwave(canvasWidth / 2, 46, 260, '#EC4899', 7);
                 spawnShockwave(canvasWidth / 2, jarTop + 40, 220, '#F59E0B', 5);
@@ -2094,6 +2461,10 @@ export default function App() {
                 );
               } else {
                 gameAudio.playOrderComplete();
+                if (isExplorerMode) {
+                  kidVoice.speakPriority('Yummy smoothie! Great job!');
+                  prioritySpokenThisMerge = true;
+                }
                 spawnShockwave(canvasWidth / 2 + 120, 44, 110, '#10B981', 4);
                 spawnScorePopup(
                   canvasWidth / 2,
@@ -2163,6 +2534,9 @@ export default function App() {
           spawnJuiceSplash(midX, midY, '#FFD700', 60, true);
           screenShakeRef.current = 12;
           gameAudio.playChiptuneExplosion();
+          if (isExplorerMode) {
+            kidVoice.speakPriority('Wow! King Durian! Super star!');
+          }
 
           fruitsRef.current.forEach((other) => {
             if (other.merged) return;
@@ -2184,7 +2558,8 @@ export default function App() {
 
           const shouldPromptVictory =
             (getConfig('kingDurianVictory') as boolean) !== false &&
-            !isEndlessModeRef.current;
+            !isEndlessModeRef.current &&
+            !isExplorerMode;
 
           if (shouldPromptVictory) {
             spawnScorePopup(
@@ -2212,7 +2587,11 @@ export default function App() {
         // Create upgraded fruit at Tier + 1
         const nextTierNum = currentTierNum + 1;
         const nextTierConfig = FRUIT_TIERS[nextTierNum - 1];
-        const radius = nextTierConfig.radius;
+        const nextItemMetaForMode = getDropItemDetails(
+          {tier: nextTierNum, special: 'none'},
+          gameModeRef.current,
+        );
+        const radius = nextItemMetaForMode.radius;
         const restitution = (getConfig('fruitRestitution') as number) || 0.22;
         const friction =
           nextTierConfig.friction ??
@@ -2316,16 +2695,38 @@ export default function App() {
           });
         }
 
-        spawnScorePopup(
-          clampedSpawnX,
-          clampedSpawnY,
-          kind === 'rainbow'
-            ? `🌈 +${earnedPoints} ${nextTierConfig.name}!`
-            : `+${earnedPoints} ${nextTierConfig.name}!`,
-          kind === 'rainbow' ? '#EC4899' : nextTierConfig.color,
-          nextTierNum >= 9 ? 26 : 24,
-          0.55,
-        );
+        if (isExplorerMode) {
+          const countNum = (kidCountRef.current % 10) + 1;
+          kidCountRef.current = countNum;
+          const kidMeta = KID_FRUIT_LABELS[nextTierNum];
+          const displayName = kidMeta ? kidMeta.name : nextTierConfig.name;
+          if (!prioritySpokenThisMerge) {
+            kidVoice.speakMerge(
+              countNum,
+              kidMeta ? kidMeta.spokenPhrase : `${displayName}!`,
+              nextTierNum >= 8,
+            );
+          }
+          spawnScorePopup(
+            clampedSpawnX,
+            clampedSpawnY,
+            `${countNum}! ✨ ${displayName}!`,
+            kind === 'rainbow' ? '#EC4899' : nextTierConfig.color,
+            nextTierNum >= 8 ? 27 : 25,
+            0.65,
+          );
+        } else {
+          spawnScorePopup(
+            clampedSpawnX,
+            clampedSpawnY,
+            kind === 'rainbow'
+              ? `🌈 +${earnedPoints} ${nextTierConfig.name}!`
+              : `+${earnedPoints} ${nextTierConfig.name}!`,
+            kind === 'rainbow' ? '#EC4899' : nextTierConfig.color,
+            nextTierNum >= 9 ? 26 : 24,
+            0.55,
+          );
+        }
 
         updateScoreWithHighScore(earnedPoints);
       });
@@ -2377,7 +2778,7 @@ export default function App() {
     const activeMag = activeMagnetRef.current;
 
     fruitsRef.current.forEach((fruit) => {
-      const fruitRadius = getFruitEntityRadius(fruit);
+      const fruitRadius = getFruitEntityRadius(fruit, gameModeRef.current);
 
       // Safety rescue clamp: prevent multi-body pressure from ever forcing a fruit outside jar bounds
       const minX = jarX + fruitRadius;
@@ -2496,7 +2897,23 @@ export default function App() {
         const speed = Math.hypot(fruit.body.velocity.x, fruit.body.velocity.y);
         const topY = fruit.body.position.y - fruitRadius;
 
-        if (ageSeconds > 2.0 && speed < 1.5 && topY < dangerLineY) {
+        if (isExplorerMode) {
+          if (ageSeconds > 1.8 && speed < 1.6 && topY < dangerLineY) {
+            settledBreach = true;
+          }
+          if (
+            isSleepyWindDownRef.current &&
+            speed < 1.2 &&
+            fruit.expressionTimer <= 0.15
+          ) {
+            fruit.expression = 'sleepy';
+            fruit.expressionTimer = 0.35;
+          } else if (feverTimerRef.current > 0 && fruit.expressionTimer <= 0.1) {
+            fruit.expression =
+              fruit.special === 'none' && fruit.tier === 13 ? 'regal' : 'bouncy';
+            fruit.expressionTimer = 0.25;
+          }
+        } else if (ageSeconds > 2.0 && speed < 1.5 && topY < dangerLineY) {
           settledBreach = true;
           fruit.expression = 'shocked';
           fruit.expressionTimer = 0.35;
@@ -2514,39 +2931,106 @@ export default function App() {
       }
     });
 
-    // 5. Danger Line Accumulator & Dynamic Audio Tension Escalation / Relief
+    // 5. Danger Line Accumulator / Little Explorer No-Fail Magic Smoothie Rescue
     const dangerGrace = (getConfig('dangerGraceSeconds') as number) || 2.5;
-    if (settledBreach && !isAntiGravityRunning) {
-      dangerTimerRef.current += deltaTime;
-      if (dangerTimerRef.current >= dangerGrace) {
-        setGameState((prev) => ({...prev, status: 'GAME_OVER'}));
+    if (isExplorerMode) {
+      if (settledBreach && !isAntiGravityRunning) {
+        dangerTimerRef.current += deltaTime;
+        if (dangerTimerRef.current >= 1.3 && engineRef.current) {
+          const world = engineRef.current.world;
+          const allUnmerged = Array.from(fruitsRef.current.values()).filter(
+            (f) => !f.merged,
+          );
+          const smallCandidates = allUnmerged
+            .filter((f) => f.special !== 'none' || f.tier <= 4)
+            .sort(
+              (a, b) =>
+                a.tier - b.tier || b.body.position.y - a.body.position.y,
+            );
+          const rescueTargets = (
+            smallCandidates.length >= 2
+              ? smallCandidates
+              : allUnmerged.sort(
+                  (a, b) =>
+                    a.tier - b.tier || b.body.position.y - a.body.position.y,
+                )
+          ).slice(0, 5);
+
+          rescueTargets.forEach((target) => {
+            target.merged = true;
+            const tx = target.body.position.x;
+            const ty = target.body.position.y;
+            const tConf = FRUIT_TIERS[target.tier - 1] || FRUIT_TIERS[0];
+            Matter.Composite.remove(world, target.body);
+            fruitsRef.current.delete(target.body.id);
+            spawnShockwave(tx, ty, 85, '#EC4899', 4);
+            spawnJuiceSplash(tx, ty, tConf.color, 16, true);
+          });
+
+          fruitsRef.current.forEach((rem) => {
+            rem.expression = 'bouncy';
+            rem.expressionTimer = 1.0;
+          });
+
+          dangerTimerRef.current = 0;
+          dangerGraceCooldownRef.current = 1.8;
+          addPowerupCharge(25, 25);
+          updateScoreWithHighScore(50);
+          gameAudio.playMagicRescuePop();
+          kidVoice.speakPriority('Bubble pop! More room to play!');
+          spawnShockwave(canvasWidth / 2, jarBottom - 120, 220, '#38BDF8', 6);
+          spawnScorePopup(
+            canvasWidth / 2,
+            jarTop + 40,
+            '🌈 BUBBLE POP RESCUE! +50',
+            '#EC4899',
+            26,
+            0.85,
+          );
+        }
+      } else {
+        dangerTimerRef.current = Math.max(
+          0,
+          dangerTimerRef.current - deltaTime * 1.8,
+        );
+      }
+      if (tensionTierRef.current !== 0) {
+        tensionTierRef.current = 0;
+        setMusicTensionTier(0);
       }
     } else {
-      dangerTimerRef.current = Math.max(
-        0,
-        dangerTimerRef.current - deltaTime * 1.5,
-      );
-    }
-
-    const nextTensionTier: 0 | 1 | 2 =
-      !isAntiGravityRunning && dangerTimerRef.current > 0.05
-        ? 2
-        : !isAntiGravityRunning && settledSimmer
-        ? 1
-        : 0;
-
-    if (nextTensionTier > 0) {
-      simmerDurationRef.current += deltaTime;
-    } else if (tensionTierRef.current > 0) {
-      if (tensionTierRef.current === 2 || simmerDurationRef.current >= 2.2) {
-        gameAudio.playReliefSplash();
+      if (settledBreach && !isAntiGravityRunning) {
+        dangerTimerRef.current += deltaTime;
+        if (dangerTimerRef.current >= dangerGrace) {
+          setGameState((prev) => ({...prev, status: 'GAME_OVER'}));
+        }
+      } else {
+        dangerTimerRef.current = Math.max(
+          0,
+          dangerTimerRef.current - deltaTime * 1.5,
+        );
       }
-      simmerDurationRef.current = 0;
-    }
 
-    if (nextTensionTier !== tensionTierRef.current) {
-      tensionTierRef.current = nextTensionTier;
-      setMusicTensionTier(nextTensionTier);
+      const nextTensionTier: 0 | 1 | 2 =
+        !isAntiGravityRunning && dangerTimerRef.current > 0.05
+          ? 2
+          : !isAntiGravityRunning && settledSimmer
+          ? 1
+          : 0;
+
+      if (nextTensionTier > 0) {
+        simmerDurationRef.current += deltaTime;
+      } else if (tensionTierRef.current > 0) {
+        if (tensionTierRef.current === 2 || simmerDurationRef.current >= 2.2) {
+          gameAudio.playReliefSplash();
+        }
+        simmerDurationRef.current = 0;
+      }
+
+      if (nextTensionTier !== tensionTierRef.current) {
+        tensionTierRef.current = nextTensionTier;
+        setMusicTensionTier(nextTensionTier);
+      }
     }
 
     // 6. Update Shockwave Rings
@@ -2668,6 +3152,17 @@ export default function App() {
         ctx.stroke();
         ctx.restore();
       });
+    } else if (expr === 'sleepy') {
+      // Cozy peaceful closed downward-curved sleeping eyes (︶ ︶)
+      ctx.lineWidth = 2.1;
+      ctx.strokeStyle = '#2C1810';
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      ctx.arc(-eyeOffsetX, eyeOffsetY - 0.5, 3.6, 0.15 * Math.PI, 0.85 * Math.PI);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.arc(eyeOffsetX, eyeOffsetY - 0.5, 3.6, 0.15 * Math.PI, 0.85 * Math.PI);
+      ctx.stroke();
     } else if (fruit.isBlinking && expr !== 'shocked' && expr !== 'sweating') {
       // Blinking curved eye lines
       ctx.lineWidth = 2;
@@ -3216,41 +3711,86 @@ export default function App() {
     ctx.fill();
     ctx.restore();
 
-    // 3. Danger Line (Pulsing / Warning)
+    // 2.8 Cozy Twilight Veil & Twinkling Stars inside Jar during Little Explorer Sleepy Wind-Down / Bedtime
+    const isExplorerCanvas = gameModeRef.current === 'EXPLORER';
+    if (
+      isExplorerCanvas &&
+      (isSleepyWindDownRef.current || isSleepyBedtimeRef.current)
+    ) {
+      const veilAlpha = isSleepyBedtimeRef.current ? 0.34 : 0.16;
+      ctx.save();
+      ctx.fillStyle = `rgba(30, 27, 75, ${veilAlpha})`;
+      ctx.beginPath();
+      ctx.roundRect(jarX, jarTop, jarWidth, jarBottom - jarTop, [0, 0, 36, 36]);
+      ctx.fill();
+
+      const starSeeds = [
+        {fx: 0.16, fy: 0.16, phase: 0.0},
+        {fx: 0.34, fy: 0.11, phase: 1.1},
+        {fx: 0.66, fy: 0.14, phase: 2.2},
+        {fx: 0.84, fy: 0.2, phase: 3.3},
+        {fx: 0.24, fy: 0.28, phase: 4.1},
+        {fx: 0.76, fy: 0.31, phase: 5.0},
+      ];
+      starSeeds.forEach((st) => {
+        const twinkle =
+          0.35 + 0.65 * Math.abs(Math.sin(performance.now() * 0.003 + st.phase));
+        const sx = jarX + jarWidth * st.fx;
+        const sy = jarTop + (jarBottom - jarTop) * st.fy;
+        ctx.fillStyle = `rgba(253, 230, 138, ${twinkle})`;
+        ctx.beginPath();
+        ctx.arc(sx, sy, 2.2 + twinkle * 1.4, 0, Math.PI * 2);
+        ctx.fill();
+      });
+      ctx.restore();
+    }
+
+    // 3. Danger Line (Classic & Daily) OR Cozy Rainbow Rim Guide (Little Explorer)
     ctx.save();
-    const dangerGrace = (getConfig('dangerGraceSeconds') as number) || 2.5;
-    const dangerRatio = Math.min(1, dangerTimerRef.current / dangerGrace);
-    const isDangerActive =
-      dangerTimerRef.current > 0.05 &&
-      antiGravityTimerRef.current <= 0 &&
-      dangerGraceCooldownRef.current <= 0;
+    if (isExplorerCanvas) {
+      ctx.lineWidth = 2;
+      ctx.setLineDash([8, 10]);
+      ctx.strokeStyle = 'rgba(245, 158, 11, 0.28)';
+      ctx.beginPath();
+      ctx.moveTo(jarX + 12, dangerLineY);
+      ctx.lineTo(jarRight - 12, dangerLineY);
+      ctx.stroke();
+      ctx.setLineDash([]);
+    } else {
+      const dangerGrace = (getConfig('dangerGraceSeconds') as number) || 2.5;
+      const dangerRatio = Math.min(1, dangerTimerRef.current / dangerGrace);
+      const isDangerActive =
+        dangerTimerRef.current > 0.05 &&
+        antiGravityTimerRef.current <= 0 &&
+        dangerGraceCooldownRef.current <= 0;
 
-    ctx.lineWidth = isDangerActive ? 3.5 : 2;
-    ctx.setLineDash([8, 8]);
-    ctx.strokeStyle = isDangerActive
-      ? `rgba(239, 68, 68, ${0.4 + Math.sin(performance.now() * 0.015) * 0.5})`
-      : 'rgba(239, 68, 68, 0.45)';
+      ctx.lineWidth = isDangerActive ? 3.5 : 2;
+      ctx.setLineDash([8, 8]);
+      ctx.strokeStyle = isDangerActive
+        ? `rgba(239, 68, 68, ${0.4 + Math.sin(performance.now() * 0.015) * 0.5})`
+        : 'rgba(239, 68, 68, 0.45)';
 
-    ctx.beginPath();
-    ctx.moveTo(jarX + 10, dangerLineY);
-    ctx.lineTo(jarRight - 10, dangerLineY);
-    ctx.stroke();
-    ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(jarX + 10, dangerLineY);
+      ctx.lineTo(jarRight - 10, dangerLineY);
+      ctx.stroke();
+      ctx.setLineDash([]);
 
-    // Danger Warning Indicator Icon/Banner if active
-    if (isDangerActive) {
-      ctx.fillStyle = 'rgba(239, 68, 68, 0.85)';
-      ctx.font = 'bold 15px ' + THEME.fontFamily;
-      ctx.textAlign = 'center';
-      ctx.fillText(
-        `DANGER! ${Math.max(0, dangerGrace - dangerTimerRef.current).toFixed(1)}s`,
-        canvasWidth / 2,
-        dangerLineY - 10,
-      );
+      // Danger Warning Indicator Icon/Banner if active
+      if (isDangerActive) {
+        ctx.fillStyle = 'rgba(239, 68, 68, 0.85)';
+        ctx.font = 'bold 15px ' + THEME.fontFamily;
+        ctx.textAlign = 'center';
+        ctx.fillText(
+          `DANGER! ${Math.max(0, dangerGrace - dangerTimerRef.current).toFixed(1)}s`,
+          canvasWidth / 2,
+          dangerLineY - 10,
+        );
 
-      // Warning glow over top of jar
-      ctx.fillStyle = `rgba(239, 68, 68, ${dangerRatio * 0.25})`;
-      ctx.fillRect(jarX, jarTop, jarWidth, dangerLineY - jarTop);
+        // Warning glow over top of jar
+        ctx.fillStyle = `rgba(239, 68, 68, ${dangerRatio * 0.25})`;
+        ctx.fillRect(jarX, jarTop, jarWidth, dangerLineY - jarTop);
+      }
     }
     ctx.restore();
 
@@ -3338,7 +3878,10 @@ export default function App() {
 
     // Precompute Smart Swept-Circle Raycast so targeted fruits also light up with starry eyes!
     const activeDropItem = currentItemRef.current;
-    const activeItemMeta = getDropItemDetails(activeDropItem);
+    const activeItemMeta = getDropItemDetails(
+      activeDropItem,
+      gameModeRef.current,
+    );
     const activeRadius = activeItemMeta.radius;
     const curDropperX = Math.max(
       jarX + activeRadius + 4,
@@ -3350,12 +3893,12 @@ export default function App() {
     let landingCenterY = jarBottom - activeRadius;
     let matchedFruit: FruitEntity | null = null;
 
-    if (gameState.status === 'PLAYING') {
+    if (gameState.status === 'PLAYING' && !isSleepyBedtimeRef.current) {
       fruitsRef.current.forEach((f) => {
         if (f.merged) return;
         const fx = f.body.position.x;
         const fy = f.body.position.y;
-        const fr = getFruitEntityRadius(f);
+        const fr = getFruitEntityRadius(f, gameModeRef.current);
         const dx = Math.abs(curDropperX - fx);
         const sumR = activeRadius + fr;
         if (dx < sumR && fy > dropperY) {
@@ -3391,7 +3934,10 @@ export default function App() {
     const isMergeTarget =
       isWildcardMerge || isStandardMerge || isFizzPairMerge;
     const aimStarryId =
-      gameState.status === 'PLAYING' && isMergeTarget && rayHitFruit
+      gameState.status === 'PLAYING' &&
+      !isSleepyBedtimeRef.current &&
+      isMergeTarget &&
+      rayHitFruit
         ? rayHitFruit.body.id
         : -1;
 
@@ -3400,7 +3946,7 @@ export default function App() {
       const {x, y} = fruit.body.position;
       const angle = fruit.body.angle;
       const tierConfig = FRUIT_TIERS[fruit.tier - 1] || FRUIT_TIERS[0];
-      const radius = getFruitEntityRadius(fruit);
+      const radius = getFruitEntityRadius(fruit, gameModeRef.current);
 
       ctx.save();
       ctx.translate(x, y);
@@ -3413,24 +3959,77 @@ export default function App() {
       // Render fruit body (special drop, procedural, or sprite)
       drawFruitBody(ctx, tierConfig, radius, fruit.special);
 
-      // Draw contextual face (highlight raycast merge target with starry eyes!)
-      const faceOverride: FruitExpression | undefined =
-        fruit.body.id === aimStarryId && antiGravityTimerRef.current <= 0
-          ? 'starry'
-          : undefined;
+      // Draw contextual face (highlight raycast merge target with starry eyes, or sleepy eyes at bedtime!)
+      const faceOverride: FruitExpression | undefined = isSleepyBedtimeRef.current
+        ? 'sleepy'
+        : fruit.body.id === aimStarryId && antiGravityTimerRef.current <= 0
+        ? 'starry'
+        : undefined;
       drawFruitFace(ctx, radius, fruit, faceOverride);
 
       ctx.restore();
+
+      // Cozy Starry Nightcap & Floating "zZz" on sleeping fruits during Bedtime Finale!
+      if (isExplorerCanvas && isSleepyBedtimeRef.current) {
+        ctx.save();
+        ctx.translate(x, y - radius * 0.78);
+        const capW = Math.max(18, radius * 0.95);
+        const capH = Math.max(14, radius * 0.72);
+
+        // Drooping indigo-blue nightcap cone
+        ctx.fillStyle = '#3B82F6';
+        ctx.strokeStyle = '#1E3A8A';
+        ctx.lineWidth = 2;
+        ctx.beginPath();
+        ctx.moveTo(-capW * 0.48, 2);
+        ctx.quadraticCurveTo(-capW * 0.1, -capH * 1.05, capW * 0.56, -capH * 0.36);
+        ctx.quadraticCurveTo(capW * 0.22, -capH * 0.1, capW * 0.46, 2);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+
+        // Fluffy cream brim
+        ctx.fillStyle = '#FFFBEB';
+        ctx.strokeStyle = '#D97706';
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.roundRect(-capW * 0.52, -2, capW * 1.02, Math.max(6, radius * 0.22), 5);
+        ctx.fill();
+        ctx.stroke();
+
+        // Golden pom-pom on drooping tip
+        ctx.fillStyle = '#FDE68A';
+        ctx.strokeStyle = '#B45309';
+        ctx.beginPath();
+        ctx.arc(capW * 0.58, -capH * 0.35, Math.max(3.5, radius * 0.15), 0, Math.PI * 2);
+        ctx.fill();
+        ctx.stroke();
+
+        // Gentle bobbing "zZz"
+        const zBob = Math.sin(performance.now() * 0.003 + fruit.body.id) * 4;
+        ctx.font = `800 ${Math.max(11, Math.min(16, Math.round(radius * 0.38)))}px ${THEME.fontFamily}`;
+        ctx.fillStyle = '#FEF3C7';
+        ctx.strokeStyle = '#1E1B4B';
+        ctx.lineWidth = 2.5;
+        ctx.textAlign = 'center';
+        ctx.strokeText('zZz', capW * 0.35, -capH * 0.85 + zBob);
+        ctx.fillText('zZz', capW * 0.35, -capH * 0.85 + zBob);
+        ctx.restore();
+      }
     });
 
-    // 5. Render Smart Swept-Circle Raycast Aiming & Dropper Fruit (when game is playing)
-    if (gameState.status === 'PLAYING') {
+    // 5. Render Smart Swept-Circle Raycast Aiming & Dropper Fruit (when game is playing & awake)
+    if (gameState.status === 'PLAYING' && !isSleepyBedtimeRef.current) {
       const activeTierConfig = activeItemMeta.tierConfig;
       const radius = activeRadius;
       const timeSinceDrop = performance.now() - lastDropTimeRef.current;
       const cooldown =
         feverTimerRef.current > 0
-          ? (getConfig('feverDropCooldownMs') as number) || 280
+          ? isExplorerCanvas
+            ? 240
+            : (getConfig('feverDropCooldownMs') as number) || 280
+          : isExplorerCanvas
+          ? 320
           : (getConfig('dropCooldownMs') as number) || 450;
       const readyProgress = Math.min(1, timeSinceDrop / cooldown);
       const isReady = readyProgress >= 1;
@@ -3456,7 +4055,10 @@ export default function App() {
 
         // Highlight target matching fruit with emerald/magenta-gold halo
         if (isMergeTarget && rayHitFruit) {
-          const targetR = getFruitEntityRadius(rayHitFruit) + 5 + pulse * 4;
+          const targetR =
+            getFruitEntityRadius(rayHitFruit, gameModeRef.current) +
+            5 +
+            pulse * 4;
           ctx.save();
           ctx.strokeStyle = reticlePrimaryColor;
           ctx.lineWidth = 3.5;
@@ -4129,6 +4731,15 @@ export default function App() {
               if (isMenuOpenRef.current) {
                 setIsMenuOpen(false);
                 sessionPlayStartRef.current = performance.now();
+              } else if (gameModeRef.current === 'EXPLORER') {
+                setShowParentHoldHint(true);
+                if (holdHintTimerRef.current !== null) {
+                  window.clearTimeout(holdHintTimerRef.current);
+                }
+                holdHintTimerRef.current = window.setTimeout(
+                  () => setShowParentHoldHint(false),
+                  1900,
+                );
               } else {
                 setIsMenuOpen(true);
               }
@@ -4158,24 +4769,42 @@ export default function App() {
   }, [exitChat]);
 
   const isMusicPlaying =
-    gameState.status === 'PLAYING' && !isMenuOpen && !musicMuted;
+    gameState.status === 'PLAYING' &&
+    !isMenuOpen &&
+    !musicMuted &&
+    !isSleepyBedtime;
 
-  const musicPlaybackRate = antiGravityActive
-    ? 0.94
-    : isFeverActive
-    ? 1.12
-    : musicTensionTier === 2
-    ? 1.09
-    : musicTensionTier === 1
-    ? 1.04
-    : 1.0;
+  const musicPlaybackRate =
+    gameMode === 'EXPLORER' && (isSleepyWindDown || isSleepyBedtime)
+      ? 0.88
+      : antiGravityActive
+      ? 0.94
+      : isFeverActive
+      ? 1.12
+      : musicTensionTier === 2
+      ? 1.09
+      : musicTensionTier === 1
+      ? 1.04
+      : 1.0;
 
   // Next & Hold Item Info
-  const nextItemMeta = getDropItemDetails(nextItem);
-  const heldItemMeta = heldItem ? getDropItemDetails(heldItem) : null;
+  const nextItemMeta = getDropItemDetails(nextItem, gameMode);
+  const heldItemMeta = heldItem ? getDropItemDetails(heldItem, gameMode) : null;
+
+  const sleepyCountdownLabel =
+    sleepyTimerMinutes > 0
+      ? `${Math.floor(sleepyRemainingSec / 60)}:${String(
+          Math.max(0, sleepyRemainingSec % 60),
+        ).padStart(2, '0')}`
+      : 'Off';
 
   // Session summary stats for Game Over & Victory overlays
-  const bestFruitName = FRUIT_TIERS[highestTier - 1]?.name || 'Cherry';
+  const bestFruitName =
+    (gameMode === 'EXPLORER'
+      ? KID_FRUIT_LABELS[highestTier]?.name
+      : undefined) ||
+    FRUIT_TIERS[highestTier - 1]?.name ||
+    'Cherry';
   const sessionStats = [
     {
       label: 'Best Fruit',
@@ -4276,16 +4905,35 @@ export default function App() {
             </span>
           </div>
 
-          <div className="hidden sm:flex bg-[#FAF3E7] px-2 py-1 rounded-xl border border-[#D4A373] shadow-inner flex-col items-start min-w-[54px]">
-            <span className="text-[8px] uppercase font-extrabold text-[#9A6B42] leading-none flex items-center gap-1">
-              <Trophy size={9} className="text-[#F59E0B]" /> BEST
-            </span>
-            <span className="text-sm md:text-base font-black text-[#8A5836] leading-tight">
-              {gameMode === 'DAILY'
-                ? Math.max(dailyHighScore, gameState.score)
-                : Math.max(highScore, gameState.score)}
-            </span>
-          </div>
+          {gameMode !== 'EXPLORER' && (
+            <div className="hidden sm:flex bg-[#FAF3E7] px-2 py-1 rounded-xl border border-[#D4A373] shadow-inner flex-col items-start min-w-[54px]">
+              <span className="text-[8px] uppercase font-extrabold text-[#9A6B42] leading-none flex items-center gap-1">
+                <Trophy size={9} className="text-[#F59E0B]" /> BEST
+              </span>
+              <span className="text-sm md:text-base font-black text-[#8A5836] leading-tight">
+                {gameMode === 'DAILY'
+                  ? Math.max(dailyHighScore, gameState.score)
+                  : Math.max(highScore, gameState.score)}
+              </span>
+            </div>
+          )}
+
+          {gameMode === 'EXPLORER' && (
+            <div
+              title="Little Explorer Mode (Ages 3–5) • Cozy Sleepy Timer"
+              className={`px-2 py-1 rounded-full border shadow-xs flex items-center gap-1 shrink-0 ${
+                isSleepyWindDown || isSleepyBedtime
+                  ? 'bg-indigo-950 text-amber-200 border-indigo-400'
+                  : 'bg-sky-100 text-sky-950 border-sky-400'
+              }`}>
+              <span className="text-[11px] leading-none">🧸</span>
+              {sleepyTimerMinutes > 0 && (
+                <span className="text-[9px] font-black tracking-tight leading-none flex items-center gap-0.5">
+                  <Moon size={9} /> {sleepyCountdownLabel}
+                </span>
+              )}
+            </div>
+          )}
 
           {gameMode === 'DAILY' && (
             <div
@@ -4313,10 +4961,16 @@ export default function App() {
         <div className="flex items-center gap-1">
           <button
             onClick={swapHoldFruit}
-            disabled={!canSwapHold || gameState.status !== 'PLAYING'}
+            disabled={
+              !canSwapHold ||
+              gameState.status !== 'PLAYING' ||
+              isSleepyBedtime
+            }
             title="Hold / Swap Fruit (C or Shift, once per drop)"
             className={`flex items-center gap-1 px-2 py-1 rounded-2xl border shadow-sm transition-all cursor-pointer active:scale-95 ${
-              canSwapHold && gameState.status === 'PLAYING'
+              canSwapHold &&
+              gameState.status === 'PLAYING' &&
+              !isSleepyBedtime
                 ? 'bg-[#FAF3E7] hover:bg-[#F3E3CF] border-[#C89666]'
                 : 'bg-[#FAF3E7]/55 border-[#D4A373]/60 opacity-65 cursor-not-allowed'
             }`}>
@@ -4389,6 +5043,7 @@ export default function App() {
             disabled={
               antiGravityCharge < 100 ||
               antiGravityActive ||
+              isSleepyBedtime ||
               gameState.status !== 'PLAYING'
             }
             title="Zero-G Anti-Gravity (Z / 1) — Charged by merging fruits!"
@@ -4426,6 +5081,7 @@ export default function App() {
             disabled={
               magnetCharge < 100 ||
               magnetActive ||
+              isSleepyBedtime ||
               gameState.status !== 'PLAYING'
             }
             title="Magnet Beam (M / 2) — Charged by merging fruits!"
@@ -4465,38 +5121,145 @@ export default function App() {
             <Sparkles size={16} className="text-[#F59E0B]" />
           </button>
 
-          {/* Menu */}
-          <button
-            onClick={() => setIsMenuOpen(true)}
-            aria-label="Open Menu"
-            className="px-2.5 h-9 min-w-[36px] min-h-[36px] rounded-xl bg-[#8C5832] hover:bg-[#724524] active:scale-95 text-white font-bold text-xs border border-[#5C3A21] shadow flex items-center gap-1 transition-all cursor-pointer">
-            <MenuIcon size={16} />
-          </button>
+          {/* Menu (1.5s Grown-Up Hold Gate in Little Explorer Mode!) */}
+          {gameMode === 'EXPLORER' ? (
+            <button
+              type="button"
+              onPointerDown={(e) => {
+                e.preventDefault();
+                startParentHold('menu', () => setIsMenuOpen(true));
+              }}
+              onPointerUp={cancelParentHold}
+              onPointerLeave={cancelParentHold}
+              onPointerCancel={cancelParentHold}
+              onContextMenu={(e) => e.preventDefault()}
+              aria-label="Hold 1.5s for Grown-Up Menu"
+              title="Hold 1.5 seconds for Grown-Up Menu"
+              className="relative overflow-hidden px-2.5 h-9 min-w-[40px] min-h-[36px] rounded-xl bg-[#8C5832] hover:bg-[#724524] text-white font-bold text-xs border border-[#5C3A21] shadow flex items-center justify-center gap-1 transition-all cursor-pointer select-none">
+              {activeHoldTarget === 'menu' && parentHoldProgress > 0 && (
+                <div
+                  className="absolute inset-y-0 left-0 bg-amber-400/65 pointer-events-none"
+                  style={{width: `${parentHoldProgress * 100}%`}}
+                />
+              )}
+              <Lock size={15} className="relative z-10 text-amber-200" />
+            </button>
+          ) : (
+            <button
+              onClick={() => setIsMenuOpen(true)}
+              aria-label="Open Menu"
+              className="px-2.5 h-9 min-w-[36px] min-h-[36px] rounded-xl bg-[#8C5832] hover:bg-[#724524] active:scale-95 text-white font-bold text-xs border border-[#5C3A21] shadow flex items-center gap-1 transition-all cursor-pointer">
+              <MenuIcon size={16} />
+            </button>
+          )}
         </div>
       </header>
 
       {/* GAME CANVAS PLAYFIELD (Always mounted so canvasRef exists on mount) */}
       <div className="flex-1 w-full min-h-0 relative flex items-center justify-center pointer-events-auto touch-none select-none">
-        {/* First drop onboarding visual prompt */}
-        {assetsReady && gameState.status === 'PLAYING' && totalDrops === 0 && (
-          <div className="absolute top-[23%] z-10 pointer-events-none flex flex-col items-center animate-bounce px-4">
-            <div className="bg-[#8C5832]/95 text-white text-xs md:text-sm font-black px-4 py-2 rounded-full shadow-lg border-2 border-[#E8CAAA] flex items-center gap-2">
-              <span>👆 Drag to Aim &bull; Release or Tap to Drop!</span>
-              <span className="hidden sm:inline text-yellow-300 font-bold">
-                (Space / &darr;)
-              </span>
+        {/* Grown-Up Hold Hint Toast (Little Explorer Mode) */}
+        {showParentHoldHint && (
+          <div className="absolute top-2 z-30 pointer-events-none flex justify-center px-3">
+            <div className="bg-indigo-950/95 text-amber-200 text-xs font-extrabold px-3.5 py-1.5 rounded-full shadow-lg border border-amber-300/60 flex items-center gap-1.5">
+              <Lock size={13} />
+              <span>Hold 1.5s for Grown-Ups</span>
             </div>
           </div>
         )}
 
+        {/* First drop onboarding visual prompt */}
+        {assetsReady &&
+          gameState.status === 'PLAYING' &&
+          totalDrops === 0 &&
+          !isSleepyBedtime && (
+            <div className="absolute top-[23%] z-10 pointer-events-none flex flex-col items-center animate-bounce px-4">
+              <div className="bg-[#8C5832]/95 text-white text-xs md:text-sm font-black px-4 py-2 rounded-full shadow-lg border-2 border-[#E8CAAA] flex items-center gap-2">
+                <span>
+                  {gameMode === 'EXPLORER'
+                    ? '👆 Tap Anywhere to Drop Yummy Fruits!'
+                    : '👆 Drag to Aim • Release or Tap to Drop!'}
+                </span>
+                {gameMode !== 'EXPLORER' && (
+                  <span className="hidden sm:inline text-yellow-300 font-bold">
+                    (Space / &darr;)
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
         {/* Anti-Gravity Onscreen tap hint */}
-        {assetsReady && antiGravityActive && (
+        {assetsReady && antiGravityActive && !isSleepyBedtime && (
           <div className="absolute top-[23%] z-10 pointer-events-none flex flex-col items-center animate-pulse px-3">
             <div className="bg-purple-900/90 text-purple-100 text-xs font-bold px-3 py-1.5 rounded-full shadow border border-purple-400 flex items-center gap-1.5">
               <span>
                 🌀 ZERO-G! Tap any floating fruit to push it toward its matching
                 twin!
               </span>
+            </div>
+          </div>
+        )}
+
+        {/* COZY BEDTIME FINALE OVERLAY CARD (Leaves sleeping fruits in starry nightcaps visible underneath!) */}
+        {isSleepyBedtime && gameState.status === 'PLAYING' && (
+          <div className="absolute inset-x-0 top-3 z-30 flex justify-center px-4 pointer-events-none">
+            <div className="w-full max-w-sm bg-indigo-950/92 backdrop-blur-xs border-2 border-amber-300/75 rounded-3xl p-4 shadow-2xl text-center text-amber-50 pointer-events-auto">
+              <div className="flex items-center justify-center gap-2 text-amber-300 font-black text-lg md:text-xl mb-1">
+                <Moon size={20} className="fill-amber-300 text-amber-300" />
+                <span>Shhh... Night-Night Fruits!</span>
+              </div>
+              <p className="text-xs text-indigo-100 font-semibold mb-3">
+                All the fruits put on their starry nightcaps and went to sleep!
+                Time for a cozy break. 🌙✨
+              </p>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    startParentHold('extend', extendSleepyTimerFiveMin);
+                  }}
+                  onPointerUp={cancelParentHold}
+                  onPointerLeave={cancelParentHold}
+                  onPointerCancel={cancelParentHold}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className="relative overflow-hidden py-2.5 px-3 rounded-2xl bg-indigo-800 hover:bg-indigo-700 border border-indigo-400 text-amber-100 font-extrabold text-xs flex items-center justify-center gap-1.5 cursor-pointer select-none">
+                  {activeHoldTarget === 'extend' && parentHoldProgress > 0 && (
+                    <div
+                      className="absolute inset-y-0 left-0 bg-emerald-400/50 pointer-events-none"
+                      style={{width: `${parentHoldProgress * 100}%`}}
+                    />
+                  )}
+                  <Lock size={12} className="relative z-10 text-amber-300" />
+                  <span className="relative z-10">+5m (Hold)</span>
+                </button>
+
+                <button
+                  type="button"
+                  onPointerDown={(e) => {
+                    e.preventDefault();
+                    startParentHold('exit', () => {
+                      isSleepyBedtimeRef.current = false;
+                      setIsSleepyBedtime(false);
+                      setGameState((prev) => ({...prev, status: 'START'}));
+                    });
+                  }}
+                  onPointerUp={cancelParentHold}
+                  onPointerLeave={cancelParentHold}
+                  onPointerCancel={cancelParentHold}
+                  onContextMenu={(e) => e.preventDefault()}
+                  className="relative overflow-hidden py-2.5 px-3 rounded-2xl bg-amber-400 hover:bg-amber-300 border border-amber-200 text-indigo-950 font-black text-xs flex items-center justify-center gap-1.5 cursor-pointer select-none">
+                  {activeHoldTarget === 'exit' && parentHoldProgress > 0 && (
+                    <div
+                      className="absolute inset-y-0 left-0 bg-white/55 pointer-events-none"
+                      style={{width: `${parentHoldProgress * 100}%`}}
+                    />
+                  )}
+                  <Lock size={12} className="relative z-10" />
+                  <span className="relative z-10">Title (Hold)</span>
+                </button>
+              </div>
             </div>
           </div>
         )}
@@ -4525,28 +5288,34 @@ export default function App() {
           title="Click to view full Evolution Guide"
           className="flex items-center justify-between overflow-x-auto py-0.5 px-1 bg-[#FAF3E7] rounded-xl border border-[#D4A373] shadow-inner cursor-pointer hover:bg-[#F5ECE0] transition-colors">
           <div className="flex items-center gap-1 shrink-0">
-            {FRUIT_TIERS.map((tier, idx) => (
-              <React.Fragment key={tier.name}>
-                <div
-                  className="w-5 h-5 rounded-full flex items-center justify-center bg-white border shadow-xs shrink-0"
-                  style={{
-                    borderColor: tier.color,
-                  }}
-                  title={`${tier.tier}. ${tier.name} (+${tier.points} pts)`}>
-                  <FruitBadgeIcon
-                    tier={tier}
-                    assetUrl={ASSETS_MANIFEST[tier.assetKey]}
-                    imageLoaded={Boolean(
-                      assetsReady && assets[tier.assetKey],
-                    )}
-                    size={16}
-                  />
-                </div>
-                {idx < FRUIT_TIERS.length - 1 && (
-                  <span className="text-[9px] text-[#A67C52] font-bold">›</span>
-                )}
-              </React.Fragment>
-            ))}
+            {FRUIT_TIERS.map((tier, idx) => {
+              const displayLabel =
+                gameMode === 'EXPLORER'
+                  ? KID_FRUIT_LABELS[tier.tier]?.name || tier.name
+                  : tier.name;
+              return (
+                <React.Fragment key={tier.name}>
+                  <div
+                    className="w-5 h-5 rounded-full flex items-center justify-center bg-white border shadow-xs shrink-0"
+                    style={{
+                      borderColor: tier.color,
+                    }}
+                    title={`${tier.tier}. ${displayLabel} (+${tier.points} pts)`}>
+                    <FruitBadgeIcon
+                      tier={tier}
+                      assetUrl={ASSETS_MANIFEST[tier.assetKey]}
+                      imageLoaded={Boolean(
+                        assetsReady && assets[tier.assetKey],
+                      )}
+                      size={16}
+                    />
+                  </div>
+                  {idx < FRUIT_TIERS.length - 1 && (
+                    <span className="text-[9px] text-[#A67C52] font-bold">›</span>
+                  )}
+                </React.Fragment>
+              );
+            })}
           </div>
           <span className="text-[10px] font-extrabold text-[#8C5832] shrink-0 ml-2">
             13 Tiers
@@ -4556,7 +5325,9 @@ export default function App() {
         {/* Footer controls hint */}
         <div className="flex items-center justify-between text-[10px] md:text-xs text-[#7A502E] px-1">
           <span className="font-medium">
-            {isMobile
+            {gameMode === 'EXPLORER'
+              ? '🧸 Little Explorer • No Game Over • Hold 🔒 1.5s for Grown-Ups'
+              : isMobile
               ? '👆 Drag & Drop • Tap HOLD to Swap'
               : '🖱️ Aim & Click • Space: Drop • C: Hold • Z: Zero-G • M: Magnet'}
           </span>
@@ -4591,42 +5362,48 @@ export default function App() {
             </p>
 
             <div className="w-full grid grid-cols-2 gap-2 overflow-y-auto max-h-[52vh] p-1 touch-auto">
-              {FRUIT_TIERS.map((tier) => (
-                <div
-                  key={tier.name}
-                  className={`flex items-center gap-2 p-2 rounded-2xl border shadow-sm ${
-                    tier.tier === 13
-                      ? 'bg-amber-100 border-amber-400 ring-2 ring-amber-300'
-                      : tier.tier === 6
-                      ? 'bg-emerald-50 border-emerald-400'
-                      : 'bg-[#FAF3E7] border-[#D4A373]'
-                  }`}>
+              {FRUIT_TIERS.map((tier) => {
+                const displayLabel =
+                  gameMode === 'EXPLORER'
+                    ? KID_FRUIT_LABELS[tier.tier]?.name || tier.name
+                    : tier.name;
+                return (
                   <div
-                    className="w-9 h-9 rounded-full flex items-center justify-center p-0.5 border shadow-inner shrink-0"
-                    style={{
-                      borderColor: tier.color,
-                      backgroundColor:
-                        tier.tier === 13 ? '#FEF3C7' : '#FFFFFF',
-                    }}>
-                    <FruitBadgeIcon
-                      tier={tier}
-                      assetUrl={ASSETS_MANIFEST[tier.assetKey]}
-                      imageLoaded={Boolean(
-                        assetsReady && assets[tier.assetKey],
-                      )}
-                      size={30}
-                    />
+                    key={tier.name}
+                    className={`flex items-center gap-2 p-2 rounded-2xl border shadow-sm ${
+                      tier.tier === 13
+                        ? 'bg-amber-100 border-amber-400 ring-2 ring-amber-300'
+                        : tier.tier === 6
+                        ? 'bg-emerald-50 border-emerald-400'
+                        : 'bg-[#FAF3E7] border-[#D4A373]'
+                    }`}>
+                    <div
+                      className="w-9 h-9 rounded-full flex items-center justify-center p-0.5 border shadow-inner shrink-0"
+                      style={{
+                        borderColor: tier.color,
+                        backgroundColor:
+                          tier.tier === 13 ? '#FEF3C7' : '#FFFFFF',
+                      }}>
+                      <FruitBadgeIcon
+                        tier={tier}
+                        assetUrl={ASSETS_MANIFEST[tier.assetKey]}
+                        imageLoaded={Boolean(
+                          assetsReady && assets[tier.assetKey],
+                        )}
+                        size={30}
+                      />
+                    </div>
+                    <div className="flex flex-col min-w-0">
+                      <span className="text-xs font-bold text-[#4A2810] truncate">
+                        {tier.tier}. {displayLabel}
+                      </span>
+                      <span className="text-[10px] text-[#9A6B42] font-semibold">
+                        +{tier.points} pts
+                      </span>
+                    </div>
                   </div>
-                  <div className="flex flex-col min-w-0">
-                    <span className="text-xs font-bold text-[#4A2810] truncate">
-                      {tier.tier}. {tier.name}
-                    </span>
-                    <span className="text-[10px] text-[#9A6B42] font-semibold">
-                      +{tier.points} pts
-                    </span>
-                  </div>
-                </div>
-              ))}
+                );
+              })}
             </div>
 
             <button
@@ -4713,6 +5490,17 @@ export default function App() {
                 same sequence of drops and Smoothie Orders, then copy your
                 scorecard at the end!
               </div>
+
+              <div className="p-3 bg-sky-50 rounded-xl border border-sky-300">
+                <strong className="block text-sky-900 mb-1">
+                  6. 🧸 Little Explorer Mode (Ages 3–5)
+                </strong>
+                Designed for preschoolers: speaks friendly fruit colors, sizes,
+                and 1–10 counting aloud, replaces Game Over with a cheerful{' '}
+                <strong>🌈 Bubble Pop Rescue</strong>, and includes a{' '}
+                <strong>🌙 Sleepy Fruits Timer</strong> +{' '}
+                <strong>1.5s Grown-Up Hold Gate</strong>!
+              </div>
             </div>
 
             <button
@@ -4730,49 +5518,88 @@ export default function App() {
       {/* GAME MENU OVERLAY */}
       {isMenuOpen && gameState.status === 'PLAYING' && (
         <MenuOverlay tone="neutral" zIndex={50}>
-          <div className="w-full max-w-md bg-[#FFF9F0] border-4 border-[#8C5832] rounded-3xl p-6 m-3 shadow-2xl flex flex-col items-center pointer-events-auto">
-            <h2 className="text-3xl font-black text-[#5C3A21] mb-5 tracking-wide">
-              Game Menu
+          <div className="w-full max-w-md bg-[#FFF9F0] border-4 border-[#8C5832] rounded-3xl p-5 m-3 shadow-2xl flex flex-col items-center pointer-events-auto max-h-[90vh] overflow-y-auto touch-auto">
+            <h2 className="text-2xl md:text-3xl font-black text-[#5C3A21] mb-4 tracking-wide">
+              {gameMode === 'EXPLORER' ? '🧸 Grown-Up Menu' : 'Game Menu'}
             </h2>
 
-            <div className="w-full space-y-3 mb-6">
+            <div className="w-full space-y-2.5 mb-4">
               {/* Resume Button */}
               <button
                 onClick={() => {
                   setIsMenuOpen(false);
                   sessionPlayStartRef.current = performance.now();
                 }}
-                className="w-full bg-[#8C5832] hover:bg-[#724524] text-white py-3.5 rounded-2xl font-bold text-lg shadow-md flex items-center justify-center gap-2 transition-transform active:scale-98 cursor-pointer">
+                className="w-full bg-[#8C5832] hover:bg-[#724524] text-white py-3 rounded-2xl font-bold text-lg shadow-md flex items-center justify-center gap-2 transition-transform active:scale-98 cursor-pointer">
                 <Play size={20} /> Resume
               </button>
 
               {/* Audio Controls */}
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 gap-2.5">
                 <button
                   onClick={() => setSfxMuted((prev) => !prev)}
-                  className="py-3 px-4 rounded-2xl bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
+                  className="py-2.5 px-3 rounded-2xl bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
                   {sfxMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
                   SFX: {sfxMuted ? 'Off' : 'On'}
                 </button>
 
                 <button
                   onClick={() => setMusicMuted((prev) => !prev)}
-                  className="py-3 px-4 rounded-2xl bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
+                  className="py-2.5 px-3 rounded-2xl bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
                   {musicMuted ? <VolumeX size={18} /> : <Volume2 size={18} />}
                   Music: {musicMuted ? 'Off' : 'On'}
                 </button>
               </div>
 
+              {/* Little Explorer Grown-Up Settings (Voiceover & Sleepy Fruits Timer) */}
+              <div className="p-3 rounded-2xl bg-sky-50 border-2 border-sky-200 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-extrabold text-sky-950 flex items-center gap-1.5">
+                    🧸 Little Explorer Settings
+                  </span>
+                  <button
+                    onClick={() => setKidVoiceEnabled((prev) => !prev)}
+                    className={`px-2.5 py-1 rounded-full text-xs font-extrabold border transition-all cursor-pointer ${
+                      kidVoiceEnabled
+                        ? 'bg-emerald-600 text-white border-emerald-700'
+                        : 'bg-white text-slate-600 border-slate-300'
+                    }`}>
+                    🗣️ Voice: {kidVoiceEnabled ? 'On' : 'Off'}
+                  </button>
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <span className="text-[11px] font-bold text-sky-900 flex items-center gap-1">
+                    <Moon size={12} className="text-indigo-600" /> Sleepy Fruits
+                    Timer (Cozy Wind-Down):
+                  </span>
+                  <div className="grid grid-cols-4 gap-1.5">
+                    {([0, 5, 10, 15] as SleepyTimerOption[]).map((mins) => (
+                      <button
+                        key={mins}
+                        onClick={() => handleSleepyTimerSelect(mins)}
+                        className={`py-1.5 rounded-xl text-xs font-extrabold border transition-all cursor-pointer ${
+                          sleepyTimerMinutes === mins
+                            ? 'bg-indigo-700 text-amber-200 border-indigo-900 shadow-xs'
+                            : 'bg-white hover:bg-sky-100 text-sky-950 border-sky-300'
+                        }`}>
+                        {mins === 0 ? 'Off' : `${mins}m`}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
               {/* How to play & Evolution */}
               <button
                 onClick={() => setIsHowToPlayOpen(true)}
-                className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
+                className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] py-2.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
                 <HelpCircle size={18} /> How to Play
               </button>
 
               <button
                 onClick={() => setIsEvolutionTreeOpen(true)}
-                className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
+                className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#5C3A21] py-2.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
                 <Sparkles size={18} className="text-[#F59E0B]" /> Fruit
                 Evolution Guide
               </button>
@@ -4780,10 +5607,12 @@ export default function App() {
               {/* Restart current session */}
               <button
                 onClick={() => initGame()}
-                className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#D97706] py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
+                className="w-full bg-[#FAF3E7] hover:bg-[#F3E3CF] border-2 border-[#D4A373] text-[#D97706] py-2.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
                 <RotateCw size={18} /> Restart{' '}
                 {gameMode === 'DAILY'
                   ? `Daily #${dailyInfo.dayNumber}`
+                  : gameMode === 'EXPLORER'
+                  ? 'Little Explorer'
                   : 'Session'}
               </button>
 
@@ -4793,7 +5622,7 @@ export default function App() {
                   setIsMenuOpen(false);
                   setGameState((prev) => ({...prev, status: 'START'}));
                 }}
-                className="w-full bg-red-100 hover:bg-red-200 border-2 border-red-300 text-red-700 py-3 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
+                className="w-full bg-red-100 hover:bg-red-200 border-2 border-red-300 text-red-700 py-2.5 rounded-2xl font-bold text-sm flex items-center justify-center gap-2 transition-all cursor-pointer">
                 Quit to Title
               </button>
             </div>
@@ -4804,15 +5633,15 @@ export default function App() {
       {/* START TITLE SCREEN */}
       {gameState.status === 'START' && (
         <MenuOverlay tone="neutral">
-          <div className="bg-[#FFF9F0] p-6 md:p-8 rounded-3xl shadow-2xl flex flex-col items-center w-full max-w-sm border-4 border-[#8C5832] pointer-events-auto">
-            <div className="w-16 h-16 rounded-full bg-[#FFE4BA] border-2 border-[#C89666] flex items-center justify-center shadow-inner mb-3">
+          <div className="bg-[#FFF9F0] p-6 md:p-7 rounded-3xl shadow-2xl flex flex-col items-center w-full max-w-sm border-4 border-[#8C5832] pointer-events-auto">
+            <div className="w-14 h-14 rounded-full bg-[#FFE4BA] border-2 border-[#C89666] flex items-center justify-center shadow-inner mb-2.5">
               <span className="text-3xl animate-bounce">👑</span>
             </div>
 
-            <h1 className="text-3xl md:text-4xl font-black mb-2 text-[#5C3A21] text-center tracking-wide">
+            <h1 className="text-3xl md:text-4xl font-black mb-1.5 text-[#5C3A21] text-center tracking-wide">
               Juicy Drop
             </h1>
-            <p className="text-xs md:text-sm text-[#8C5832] font-semibold text-center mb-6">
+            <p className="text-xs md:text-sm text-[#8C5832] font-semibold text-center mb-5">
               Drop &amp; merge fruits inside the cozy wooden jar to create
               Cucumber, Watermelon, and the legendary King Durian!
             </p>
@@ -4824,6 +5653,20 @@ export default function App() {
                 className="w-full bg-[#8C5832] hover:bg-[#724524] text-white py-3.5 rounded-2xl font-black text-lg md:text-xl shadow-lg hover:shadow-xl transition-all flex items-center justify-center gap-2 active:scale-98 cursor-pointer">
                 <Play size={22} />
                 PLAY CLASSIC
+              </button>
+
+              <button
+                onClick={() => initGame('EXPLORER')}
+                className="w-full bg-gradient-to-r from-sky-500 via-indigo-500 to-purple-500 hover:from-sky-600 hover:via-indigo-600 hover:to-purple-600 text-white py-3 px-4 rounded-2xl font-extrabold text-sm md:text-base shadow-md transition-all flex items-center justify-between active:scale-98 cursor-pointer border-2 border-sky-200">
+                <span className="flex items-center gap-2">
+                  <span className="text-lg leading-none">🧸</span>
+                  <span>LITTLE EXPLORER (3–5)</span>
+                </span>
+                <span className="text-[10px] bg-black/25 px-2 py-0.5 rounded-full font-bold text-amber-100">
+                  {sleepyTimerMinutes > 0
+                    ? `🌙 ${sleepyTimerMinutes}m`
+                    : 'No-Fail!'}
+                </span>
               </button>
 
               <button
