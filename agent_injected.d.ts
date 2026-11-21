@@ -114,42 +114,6 @@ declare global {
 declare module 'react-dom/client';
 declare module 'framer-motion';
 declare module 'lucide-react';
-declare module 'three' {
-  interface ThreeCatchAll {
-    [key: string]: any;
-  }
-  const THREE: ThreeCatchAll;
-  namespace THREE {
-    export type Vector3 = any;
-    export type Object3D = any;
-    export type Mesh = any;
-    export type Group = any;
-    export type Color = any;
-    export type Euler = any;
-    export type Quaternion = any;
-    export type Material = any;
-    export type Texture = any;
-    export type PointLight = any;
-    export type Sprite = any;
-    export type CanvasTexture = any;
-    export type DirectionalLight = any;
-    export type AmbientLight = any;
-    export type SpotLight = any;
-    export type Scene = any;
-    export type Camera = any;
-    export type PerspectiveCamera = any;
-    export type InstancedMesh = any;
-    export type MeshStandardMaterial = any;
-    export type MeshBasicMaterial = any;
-    export type MeshPhongMaterial = any;
-    export type BoxGeometry = any;
-    export type SphereGeometry = any;
-    export type PlaneGeometry = any;
-    export type CylinderGeometry = any;
-    export type IcosahedronGeometry = any;
-  }
-  export = THREE;
-}
 
 declare module 'react/jsx-runtime' {
   import { ReactNode } from 'react';

@@ -19,8 +19,22 @@ import {
   Check,
   Lock,
   Moon,
+  Gamepad2,
 } from 'lucide-react';
-import React, {useCallback, useEffect, useMemo, useRef, useState} from 'react';
+import React, {
+  lazy,
+  Suspense,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from 'react';
+import {App as CapacitorApp} from '@capacitor/app';
+import {MinigamesHub} from './components/MinigamesHub';
+import type {MinigameId} from './minigames/registry';
+
+const FruitSkyRoll = lazy(() => import('./minigames/sky-roll/FruitSkyRoll'));
 import {
   CONFIG,
   DropItem,
@@ -293,6 +307,12 @@ export default function App() {
   const [totalDrops, setTotalDrops] = useState(0);
   const [isEndlessMode, setIsEndlessMode] = useState(false);
   const [gameMode, setGameMode] = useState<GameMode>('CLASSIC');
+  const [activeScreen, setActiveScreen] = useState<
+    'JUICY_DROP' | 'MINIGAMES_HUB' | 'SKY_ROLL'
+  >('JUICY_DROP');
+  const activeScreenRef = useRef(activeScreen);
+  activeScreenRef.current = activeScreen;
+  const skyRollBackHandlerRef = useRef<(() => void) | null>(null);
   const dailyInfo = useMemo(() => getDailyHarvestInfo(), []);
   const [dailyHighScore, setDailyHighScore] = useState<number>(() => {
     if (typeof window === 'undefined') return 0;
@@ -4712,6 +4732,62 @@ export default function App() {
   updateRef.current = update;
   drawRef.current = draw;
 
+  // Native Android Hardware Back Button support via @capacitor/app
+  useEffect(() => {
+    let removeListener: (() => void) | null = null;
+    try {
+      const handle = CapacitorApp.addListener('backButton', () => {
+        const screen = activeScreenRef.current;
+        if (screen === 'SKY_ROLL') {
+          if (skyRollBackHandlerRef.current) {
+            skyRollBackHandlerRef.current();
+          } else {
+            setActiveScreen('MINIGAMES_HUB');
+          }
+          return;
+        }
+        if (screen === 'MINIGAMES_HUB') {
+          setActiveScreen('JUICY_DROP');
+          return;
+        }
+        if (isEvolutionTreeOpenRef.current) {
+          setIsEvolutionTreeOpen(false);
+          return;
+        }
+        if (isHowToPlayOpenRef.current) {
+          setIsHowToPlayOpen(false);
+          return;
+        }
+        if (gameStateRef.current.status === 'PLAYING') {
+          if (isMenuOpenRef.current) {
+            setIsMenuOpen(false);
+          } else if (gameModeRef.current !== 'EXPLORER') {
+            setIsMenuOpen(true);
+          }
+          return;
+        }
+        if (
+          gameStateRef.current.status === 'GAME_OVER' ||
+          gameStateRef.current.status === 'VICTORY'
+        ) {
+          setGameState((prev) => ({...prev, status: 'START'}));
+          return;
+        }
+        void CapacitorApp.exitApp();
+      });
+      void Promise.resolve(handle).then((listener) => {
+        removeListener = () => {
+          void listener.remove();
+        };
+      });
+    } catch {
+      // Web environment without Capacitor native bridge
+    }
+    return () => {
+      removeListener?.();
+    };
+  }, []);
+
   useEffect(() => {
     let raf = 0;
     const loop = (time: number) => {
@@ -4719,7 +4795,15 @@ export default function App() {
       if (inputRef.current) {
         const cancelPressed = inputRef.current.actions.cancel;
         if (cancelPressed && !lastCancelRef.current) {
-          if (isEvolutionTreeOpenRef.current) {
+          if (activeScreenRef.current === 'SKY_ROLL') {
+            if (skyRollBackHandlerRef.current) {
+              skyRollBackHandlerRef.current();
+            } else {
+              setActiveScreen('MINIGAMES_HUB');
+            }
+          } else if (activeScreenRef.current === 'MINIGAMES_HUB') {
+            setActiveScreen('JUICY_DROP');
+          } else if (isEvolutionTreeOpenRef.current) {
             setIsEvolutionTreeOpen(false);
             sessionPlayStartRef.current = performance.now();
           } else if (isHowToPlayOpenRef.current) {
@@ -4756,10 +4840,13 @@ export default function App() {
         lastCancelRef.current = cancelPressed;
       }
 
-      stepperRef.current?.(time, (dt) => updateRef.current(dt));
+      // Pause 2D Juicy Drop simulation & canvas rendering when inside 3D Minigames
+      if (activeScreenRef.current === 'JUICY_DROP') {
+        stepperRef.current?.(time, (dt) => updateRef.current(dt));
 
-      const ctx = canvasRef.current?.getContext('2d');
-      if (ctx) drawRef.current(ctx);
+        const ctx = canvasRef.current?.getContext('2d');
+        if (ctx) drawRef.current(ctx);
+      }
 
       raf = requestAnimationFrame(loop);
     };
@@ -4769,10 +4856,12 @@ export default function App() {
   }, [exitChat]);
 
   const isMusicPlaying =
-    gameState.status === 'PLAYING' &&
-    !isMenuOpen &&
-    !musicMuted &&
-    !isSleepyBedtime;
+    ((gameState.status === 'PLAYING' &&
+      !isMenuOpen &&
+      !isSleepyBedtime &&
+      activeScreen === 'JUICY_DROP') ||
+      activeScreen === 'SKY_ROLL') &&
+    !musicMuted;
 
   const musicPlaybackRate =
     gameMode === 'EXPLORER' && (isSleepyWindDown || isSleepyBedtime)
@@ -5670,6 +5759,21 @@ export default function App() {
               </button>
 
               <button
+                onClick={() => {
+                  gameAudio.playConfirmSelect();
+                  setActiveScreen('MINIGAMES_HUB');
+                }}
+                className="w-full bg-gradient-to-r from-amber-500 via-orange-500 to-rose-500 hover:from-amber-600 hover:via-orange-600 hover:to-rose-600 text-white py-3 px-4 rounded-2xl font-extrabold text-sm md:text-base shadow-md transition-all flex items-center justify-between active:scale-98 cursor-pointer border-2 border-amber-200">
+                <span className="flex items-center gap-2">
+                  <Gamepad2 size={19} />
+                  <span>MINIGAMES</span>
+                </span>
+                <span className="text-[10px] bg-black/25 px-2 py-0.5 rounded-full font-black text-amber-100">
+                  NEW! 3D Sky Roll
+                </span>
+              </button>
+
+              <button
                 onClick={() => initGame('DAILY')}
                 className="w-full bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white py-3 px-4 rounded-2xl font-extrabold text-sm md:text-base shadow-md transition-all flex items-center justify-between active:scale-98 cursor-pointer border-2 border-emerald-300/60">
                 <span className="flex items-center gap-2">
@@ -5738,6 +5842,40 @@ export default function App() {
           extraFooter={shareFooterNode}
           tone="victory"
         />
+      )}
+      {/* MINIGAMES HUB OVERLAY */}
+      {activeScreen === 'MINIGAMES_HUB' && (
+        <MinigamesHub
+          onSelectMinigame={(id: MinigameId) => {
+            if (id === 'sky-roll') {
+              setActiveScreen('SKY_ROLL');
+            }
+          }}
+          onBack={() => setActiveScreen('JUICY_DROP')}
+        />
+      )}
+
+      {/* LAZY-LOADED 3D FRUIT SKY ROLL MINIGAME (Code-Split Three.js Chunk) */}
+      {activeScreen === 'SKY_ROLL' && (
+        <Suspense
+          fallback={
+            <div className="fixed inset-0 z-50 flex flex-col items-center justify-center bg-gradient-to-b from-sky-300 to-[#FDF6E3] text-[#5C3A21] gap-3">
+              <div className="text-5xl animate-bounce">🍊</div>
+              <div className="text-xl font-black tracking-wide">
+                Loading 3D Sky Track...
+              </div>
+            </div>
+          }>
+          <FruitSkyRoll
+            sfxMuted={sfxMuted}
+            musicMuted={musicMuted}
+            kidVoiceEnabled={kidVoiceEnabled}
+            onToggleSfx={() => setSfxMuted((prev) => !prev)}
+            onToggleMusic={() => setMusicMuted((prev) => !prev)}
+            onExitToHub={() => setActiveScreen('MINIGAMES_HUB')}
+            backHandlerRef={skyRollBackHandlerRef}
+          />
+        </Suspense>
       )}
     </div>
   );

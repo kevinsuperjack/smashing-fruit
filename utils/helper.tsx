@@ -1071,6 +1071,122 @@ class GameAudio {
       });
     });
   }
+
+  // --- Fruit Sky Roll 3D Minigame Procedural SFX ---
+
+  playSkyJump() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.025);
+    this.blip(b, b.now, {
+      type: 'sine',
+      freq: 290 * v,
+      freqTo: 640 * v,
+      dur: 0.14,
+      gain: 0.11,
+    });
+    this.blip(b, b.now + 0.03, {
+      type: 'triangle',
+      freq: 440 * v,
+      freqTo: 880 * v,
+      dur: 0.11,
+      gain: 0.06,
+    });
+  }
+
+  playSkyBouncePad() {
+    const b = this.begin();
+    if (!b) return;
+    const v = this.vary(0.02);
+    this.blip(b, b.now, {
+      type: 'sine',
+      freq: 220 * v,
+      freqTo: 880 * v,
+      dur: 0.22,
+      gain: 0.13,
+    });
+    this.blip(b, b.now + 0.07, {
+      type: 'triangle',
+      freq: 523.25 * v,
+      freqTo: 1174.66 * v,
+      dur: 0.2,
+      gain: 0.08,
+    });
+  }
+
+  playSkyCoin(streak = 1) {
+    const b = this.begin();
+    if (!b) return;
+    const semis = Math.min(streak - 1, 8);
+    const pitch = Math.pow(2, semis / 12);
+    this.blip(b, b.now, {
+      type: 'sine',
+      freq: 880 * pitch,
+      dur: 0.09,
+      gain: 0.09,
+    });
+    this.blip(b, b.now + 0.055, {
+      type: 'triangle',
+      freq: 1318.51 * pitch,
+      dur: 0.16,
+      gain: 0.085,
+    });
+  }
+
+  playSkyCheckpoint() {
+    const b = this.begin();
+    if (!b) return;
+    const notes = [523.25, 659.25, 783.99, 1046.5];
+    notes.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.065, {
+        type: 'triangle',
+        freq,
+        dur: 0.22,
+        gain: 0.09,
+      });
+    });
+  }
+
+  playSkyBubbleRescue() {
+    const b = this.begin();
+    if (!b) return;
+    const notes = [440, 554.37, 659.25, 880];
+    notes.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.07, {
+        type: 'sine',
+        freq,
+        freqTo: freq * 1.12,
+        dur: 0.18,
+        gain: 0.08,
+      });
+    });
+  }
+
+  playSkyFall() {
+    const b = this.begin();
+    if (!b) return;
+    this.blip(b, b.now, {
+      type: 'sine',
+      freq: 520,
+      freqTo: 180,
+      dur: 0.32,
+      gain: 0.1,
+    });
+  }
+
+  playSkyVictory() {
+    const b = this.begin();
+    if (!b) return;
+    const notes = [523.25, 659.25, 783.99, 1046.5, 1318.51, 1567.98];
+    notes.forEach((freq, i) => {
+      this.blip(b, b.now + i * 0.075, {
+        type: 'triangle',
+        freq,
+        dur: i === notes.length - 1 ? 0.5 : 0.2,
+        gain: 0.095,
+      });
+    });
+  }
 }
 
 /** Shared singleton — import and use anywhere. */

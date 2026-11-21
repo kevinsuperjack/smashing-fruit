@@ -7,19 +7,27 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:android": "vite build && npx cap sync android",
+    "apk": "vite build && npx cap sync android && JAVA_HOME=\"$HOME/.android-build-tools/jdk/Contents/Home\" ANDROID_HOME=\"$HOME/.android-build-tools/sdk\" ./android/gradlew -p android assembleDebug && cp android/app/build/outputs/apk/debug/app-debug.apk ./SmashingFruit.apk"
   },
   "dependencies": {
+    "@capacitor/app": "^8.1.2",
     "lucide-react": "^1.16.0",
     "matter-js": "^0.20.0",
     "react": "^19.0.0",
-    "react-dom": "^19.0.0"
+    "react-dom": "^19.0.0",
+    "three": "^0.187.0"
   },
   "devDependencies": {
+    "@capacitor/android": "^8.6.2",
+    "@capacitor/cli": "^8.6.2",
+    "@capacitor/core": "^8.6.2",
     "@tailwindcss/vite": "^4.1.4",
     "@types/matter-js": "^0.19.8",
     "@types/react": "^19.0.10",
     "@types/react-dom": "^19.0.4",
+    "@types/three": "^0.187.0",
     "@vitejs/plugin-react": "^4.3.4",
     "tailwindcss": "^4.1.4",
     "typescript": "^5.7.3",
