@@ -518,3 +518,6 @@ export function getConfig<K extends ConfigKey>(
 }
 
 export const PRESETS = {};
+
+export const ANDROID_APK_DOWNLOAD_URL =
+  'https://github.com/kevinsuperjack/smashing-fruit/releases/latest/download/SmashingFruit.apk';

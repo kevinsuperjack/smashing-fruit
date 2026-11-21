@@ -1,0 +1,66 @@
+name: Build Android APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+
+      - name: Setup Java JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install dependencies
+        run: npm ci || npm install
+
+      - name: Build web application
+        run: npm run build
+
+      - name: Sync Capacitor Android
+        run: npx cap sync android
+
+      - name: Build Debug APK
+        working-directory: ./android
+        run: ./gradlew assembleDebug --stacktrace
+
+      - name: Stage SmashingFruit.apk
+        run: cp android/app/build/outputs/apk/debug/app-debug.apk SmashingFruit.apk
+
+      - name: Upload APK Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmashingFruit-APK
+          path: SmashingFruit.apk
+
+      - name: Publish APK to Latest GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Smashing Fruit (Latest Android APK)
+          body: |
+            Direct Android APK build of **Juicy Drop (Smashing Fruit)** including **Little Explorer Mode** and the 3D **Fruit Sky Roll** minigame!
+
+            Download `SmashingFruit.apk` below, tap Open on your Android phone or tablet, and allow installation from your browser if prompted.
+          files: SmashingFruit.apk
+          make_latest: true

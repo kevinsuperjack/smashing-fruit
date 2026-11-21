@@ -20,6 +20,7 @@ import {
   Lock,
   Moon,
   Gamepad2,
+  Download,
 } from 'lucide-react';
 import React, {
   lazy,
@@ -30,12 +31,14 @@ import React, {
   useRef,
   useState,
 } from 'react';
+import {Capacitor} from '@capacitor/core';
 import {App as CapacitorApp} from '@capacitor/app';
 import {MinigamesHub} from './components/MinigamesHub';
 import type {MinigameId} from './minigames/registry';
 
 const FruitSkyRoll = lazy(() => import('./minigames/sky-roll/FruitSkyRoll'));
 import {
+  ANDROID_APK_DOWNLOAD_URL,
   CONFIG,
   DropItem,
   FRUIT_TIERS,
@@ -5798,6 +5801,22 @@ export default function App() {
                 <Sparkles size={18} className="text-[#F59E0B]" />
                 13-Tier Evolution Guide
               </button>
+
+              {!Capacitor.isNativePlatform() && (
+                <a
+                  href={ANDROID_APK_DOWNLOAD_URL}
+                  download="SmashingFruit.apk"
+                  onClick={() => gameAudio.playConfirmSelect()}
+                  className="w-full bg-emerald-50 hover:bg-emerald-100 text-emerald-900 py-2.5 px-4 rounded-2xl font-extrabold text-xs md:text-sm border-2 border-emerald-400 transition-all flex items-center justify-between active:scale-98 cursor-pointer">
+                  <span className="flex items-center gap-2">
+                    <Download size={17} className="text-emerald-700" />
+                    <span>Download Android App</span>
+                  </span>
+                  <span className="text-[10px] bg-emerald-600 text-white px-2 py-0.5 rounded-full font-black tracking-wide">
+                    APK
+                  </span>
+                </a>
+              )}
             </div>
           </div>
         </MenuOverlay>

@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">Smashing Fruit</string>
+    <string name="title_activity_main">Smashing Fruit</string>
+    <string name="package_name">com.smashingfruit.game</string>
+    <string name="custom_url_scheme">com.smashingfruit.game</string>
+</resources>
