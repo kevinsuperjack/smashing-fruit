@@ -167,23 +167,32 @@ export const FruitSkyRoll: React.FC<FruitSkyRollProps> = ({
     engine.setInput(steerX, throttle);
   }, []);
 
+  const resetInputs = useCallback(() => {
+    keysHeldRef.current.clear();
+    steerPointerIdRef.current = null;
+    touchInputRef.current = { steerX: 0, throttle: 0 };
+    setDragVisual(null);
+    engineRef.current?.setInput(0, 0);
+  }, []);
+
   const startLevel = useCallback((levelId: number) => {
     gameAudio.playConfirmSelect();
+    resetInputs();
     runCoinsBankedRef.current = false;
     setVictory(null);
     setBannerText(null);
     setActiveLevelId(levelId);
     setView('PLAYING');
     setRunNonce((n) => n + 1);
-  }, []);
+  }, [resetInputs]);
 
   const returnToLobby = useCallback(() => {
     bankPartialCoinsIfNeeded();
+    resetInputs();
+    engineRef.current?.dispose();
+    engineRef.current = null;
     setView('LOBBY');
-    setDragVisual(null);
-    steerPointerIdRef.current = null;
-    touchInputRef.current = { steerX: 0, throttle: 0 };
-  }, [bankPartialCoinsIfNeeded]);
+  }, [bankPartialCoinsIfNeeded, resetInputs]);
 
   // Wire unified Back button handler (Android Hardware Back & Escape)
   useEffect(() => {
@@ -191,6 +200,7 @@ export const FruitSkyRoll: React.FC<FruitSkyRollProps> = ({
     backHandlerRef.current = () => {
       const current = viewRef.current;
       if (current === 'PLAYING') {
+        resetInputs();
         engineRef.current?.setPaused(true);
         setView('PAUSED');
       } else if (current === 'PAUSED') {
@@ -205,11 +215,12 @@ export const FruitSkyRoll: React.FC<FruitSkyRollProps> = ({
     return () => {
       backHandlerRef.current = null;
     };
-  }, [backHandlerRef, onExitToHub, returnToLobby]);
+  }, [backHandlerRef, onExitToHub, resetInputs, returnToLobby]);
 
   // Auto-pause on phone lock / tab switch (visibilitychange & blur)
   useEffect(() => {
     const handleAutoPause = () => {
+      resetInputs();
       if (viewRef.current === 'PLAYING') {
         engineRef.current?.setPaused(true);
         setView('PAUSED');
@@ -224,7 +235,7 @@ export const FruitSkyRoll: React.FC<FruitSkyRollProps> = ({
       document.removeEventListener('visibilitychange', onVisChange);
       window.removeEventListener('blur', handleAutoPause);
     };
-  }, []);
+  }, [resetInputs]);
 
   // Desktop keyboard controls
   useEffect(() => {
@@ -258,8 +269,9 @@ export const FruitSkyRoll: React.FC<FruitSkyRollProps> = ({
   }, [syncCombinedInput]);
 
   // Mount & Dispose Three.js SkyRollEngine for active run
+  const inRun = view !== 'LOBBY';
   useEffect(() => {
-    if (view === 'LOBBY') {
+    if (!inRun) {
       engineRef.current?.dispose();
       engineRef.current = null;
       return;
@@ -366,7 +378,7 @@ export const FruitSkyRoll: React.FC<FruitSkyRollProps> = ({
       engineRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [runNonce, activeLevelId]);
+  }, [inRun, runNonce, activeLevelId]);
 
   // Cleanup banner timeout
   useEffect(() => {
@@ -423,6 +435,14 @@ export const FruitSkyRoll: React.FC<FruitSkyRollProps> = ({
       engineRef.current?.requestJump();
     }
 
+    steerPointerIdRef.current = null;
+    touchInputRef.current = { steerX: 0, throttle: 0 };
+    syncCombinedInput();
+    setDragVisual(null);
+  };
+
+  const handleSteerPointerCancel = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (e.pointerId !== steerPointerIdRef.current) return;
     steerPointerIdRef.current = null;
     touchInputRef.current = { steerX: 0, throttle: 0 };
     syncCombinedInput();
@@ -711,7 +731,8 @@ export const FruitSkyRoll: React.FC<FruitSkyRollProps> = ({
         onPointerDown={handleSteerPointerDown}
         onPointerMove={handleSteerPointerMove}
         onPointerUp={handleSteerPointerEnd}
-        onPointerCancel={handleSteerPointerEnd}
+        onPointerCancel={handleSteerPointerCancel}
+        onLostPointerCapture={handleSteerPointerCancel}
         className="absolute inset-0 z-10 touch-none"
       />
 
@@ -784,6 +805,7 @@ export const FruitSkyRoll: React.FC<FruitSkyRollProps> = ({
           onPointerDown={(e) => e.stopPropagation()}
           onClick={() => {
             gameAudio.playConfirmSelect();
+            resetInputs();
             engineRef.current?.setPaused(true);
             setView('PAUSED');
           }}

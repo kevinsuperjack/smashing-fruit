@@ -4737,6 +4737,7 @@ export default function App() {
 
   // Native Android Hardware Back Button support via @capacitor/app
   useEffect(() => {
+    let disposed = false;
     let removeListener: (() => void) | null = null;
     try {
       const handle = CapacitorApp.addListener('backButton', () => {
@@ -4779,6 +4780,10 @@ export default function App() {
         void CapacitorApp.exitApp();
       });
       void Promise.resolve(handle).then((listener) => {
+        if (disposed) {
+          void listener.remove();
+          return;
+        }
         removeListener = () => {
           void listener.remove();
         };
@@ -4787,6 +4792,7 @@ export default function App() {
       // Web environment without Capacitor native bridge
     }
     return () => {
+      disposed = true;
       removeListener?.();
     };
   }, []);

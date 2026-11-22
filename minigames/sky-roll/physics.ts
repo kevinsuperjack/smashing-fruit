@@ -514,11 +514,11 @@ export function stepSkyRollPhysics(
         // Rotating horizontal bar centered at (pose.x, pose.y + 0.55, pose.z)
         const barY = pose.y + 0.55;
         if (Math.abs(state.y - barY) < BALL_RADIUS + obs.height * 0.45) {
-          // Transform ball position into windmill local space
+          // Transform ball position into windmill local space (inverse of Three.js rotation.y = +angleY)
           const relX = state.x - pose.x;
           const relZ = state.z - pose.z;
-          const cos = Math.cos(-pose.angleY);
-          const sin = Math.sin(-pose.angleY);
+          const cos = Math.cos(pose.angleY);
+          const sin = Math.sin(pose.angleY);
           const localX = relX * cos - relZ * sin;
           const localZ = relX * sin + relZ * cos;
           const halfLen = obs.size * 0.5 + BALL_RADIUS * 0.8;
@@ -526,7 +526,7 @@ export function stepSkyRollPhysics(
           if (Math.abs(localX) < halfLen && Math.abs(localZ) < halfThick) {
             const kickSign = localZ >= 0 ? 1 : -1;
             const push = difficulty === 'KID' ? 5.2 : 8.2;
-            state.vx += -Math.sin(pose.angleY) * kickSign * push;
+            state.vx += Math.sin(pose.angleY) * kickSign * push;
             state.vz += Math.cos(pose.angleY) * kickSign * push;
             state.vy = Math.max(state.vy, 3.8);
             state.grounded = false;
