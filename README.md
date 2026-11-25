@@ -10,6 +10,11 @@
 
 ## ✨ Features
 
+- **🎄 Switchable Christmas Wonderland Theme (`Cozy Orchard ☀️` ↔ `Christmas Wonderland 🎄`)**: Toggle themes instantly from the Start Screen, Pause Menu, or Minigames Arcade header (persisted in `localStorage`). **Christmas Wonderland** transforms Juicy Drop with a winter twilight backdrop, falling snowflakes, twinkling jar-rim fairy lights, and procedural Santa hats on fruits—plus festive palettes, snowfall overlays, and holiday card wraps across the Minigames Arcade.
+- **🕹️ Minigames Arcade & Shared 🪙 Golden Seeds Wallet**: Launch three standalone fruit minigames directly from the Start Screen, all crediting **Golden Seeds** into one shared Arcade wallet spendable in Fruit Sky Roll's 3D Skin Shop:
+  - **🍊 Fruit Sky Roll (`3D Playable`)**: Three.js 3D rolling adventure with `10` handcrafted sky courses, `6` unlockable 3D fruit skins, moving bridges, bounce pads, windmills, Kid Mode guardrails + Bubble-Float Rescue, and Arcade Mode 3-heart challenges.
+  - **🫧 Fruit Pop Splash (`Ages 3–8`)**: 60fps HTML5 Canvas multi-touch bubble popper with **Kid Mode** (relaxed no-fail playground + `KidVoice` fruit vocabulary & `1–10` counting) and **Arcade Mode** (60s Splash Rush, combo multipliers up to `4x`, Rainbow chain-pop blasts, Golden Seed bubbles, and 1–3 star grading).
+  - **🍓 Smoothie Memory Match (`Ages 3–8`)**: Cozy 3D-flip wooden fruit card matching game featuring **Kid Mode** (`3×2` & `4×3` boards, 8-second sparkle hints, `KidVoice`) and **Arcade Mode** (`4×3`, `4×4`, and `5×4` grids, consecutive-match **Smoothie Blender** bonuses, and move-efficiency 1–3 star ratings).
 - **🧸 Little Explorer Mode (Ages 3–5 Early Childhood Suite)**: A dedicated preschool sandbox on the Start Screen designed around early childhood pedagogy—while keeping **Classic** and **Daily Harvest** 100% untouched:
   - **🗣️ Friendly Spoken Fruit Vocabulary & `1–10` Counting**: Uses the Web Speech API (`KidVoice`, toggleable `Voice: On/Off`) + musical chimes to count merges aloud (`1–10`) and speak preschool-friendly color & size names (`"Red Cherry!"`, `"Juicy Tangerine!"`, `"Sunny Orange!"`, `"Big Yellow Pineapple!"`, `"Giant Green Watermelon!"`).
   - **🌈 No-Fail Bubble Pop Rescue & Gentle Motor Assist**: Removes scary red `DANGER!` alarms and Game Over screens—if fruits pile near the rim, up to `5` bottom berries cheerily pop into rainbow bubbles (`"Bubble pop! More room to play!"`). Includes larger touch-friendly Cherry (`26px`) & Strawberry (`34px`) colliders, `320ms` drop cadence, gentle `14px` twin-magnet roll assist, and `1–2` icon Smoothie Orders.
@@ -85,20 +90,32 @@ When two identical fruits touch, they merge into the next fruit tier and award p
 ## 🛠️ Tech Stack
 
 - **UI Framework**: [React 19](https://react.dev/) + [TypeScript](https://www.typescriptlang.org/) + [Tailwind CSS v4](https://tailwindcss.com/)
-- **Physics Engine**: [Matter.js](https://brm.io/matter-js/)
-- **Rendering**: HTML5 2D Canvas (`720x1200` logical resolution with responsive DPI scaling, swept-circle raycast preview, squash-and-stretch deformation, & procedural vector sprites)
+- **Physics & 3D Engines**: [Matter.js](https://brm.io/matter-js/) (Juicy Drop 2D physics) + [Three.js](https://threejs.org/) (Fruit Sky Roll 3D minigame)
+- **Rendering**: HTML5 2D Canvas (`720x1200` Juicy Drop + 60fps Fruit Pop Splash), WebGL (Three.js), & CSS 3D card flips
+- **Mobile Packaging**: [Capacitor 8](https://capacitorjs.com/) (`@capacitor/android`, `@capacitor/app` hardware back-button support)
 - **Icons**: [Lucide React](https://lucide.dev/)
-- **Audio**: Web Audio API procedural sound effects & background music
+- **Audio**: Web Audio API procedural sound effects, dynamic-tempo background music, & Web Speech API `KidVoice`
 - **Bundler**: [Vite](https://vite.dev/)
 
 ---
 
-## 🚀 Local Development & Build
+## 📱 Android App (Direct APK Download & Local Build)
+
+- **Direct Download**: Tap **Download Android App (APK)** on the web Start Screen or grab the latest release directly from [GitHub Releases (`SmashingFruit.apk`)](https://github.com/kevinsuperjack/smashing-fruit/releases/latest/download/SmashingFruit.apk). Every push to `main` automatically builds and publishes a fresh APK via `.github/workflows/build-apk.yml`.
+- **Local Android Sync & APK Build**:
+  ```bash
+  npm run build:android   # builds dist/ and syncs Capacitor Android
+  npm run apk             # builds and copies debug APK to ./SmashingFruit.apk
+  ```
+
+---
+
+## 🚀 Local Development & Verification
 
 ### Prerequisites
 
-- **Node.js** `>= 18.x`
-- **npm** `>= 9.x`
+- **Node.js** `>= 22.x` (required by Capacitor 8 CLI and native TypeScript test scripts)
+- **npm** `>= 10.x`
 
 ### Getting Started
 
@@ -113,11 +130,13 @@ When two identical fruits touch, they merge into the next fruit tier and award p
    ```
    Open the local URL shown in your terminal (typically `http://localhost:5173`) in your browser.
 
-3. **Build for production**:
+3. **Run verification checks**:
    ```bash
+   ./node_modules/.bin/tsc --noEmit
    npm run build
+   node scripts/verify-sky-roll.ts
+   node scripts/verify-minigames.ts
    ```
-   This bundles the production-ready static assets into the `dist/` directory.
 
 4. **Preview the production build locally**:
    ```bash

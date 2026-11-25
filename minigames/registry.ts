@@ -31,11 +31,11 @@ export const MINIGAMES_REGISTRY: MinigameDefinition[] = [
     subtitle:
       'Pop floating rainbow fruit bubbles before they drift into the clouds!',
     emoji: '🫧',
-    badge: 'COMING SOON',
+    badge: 'PLAYABLE',
     ageTag: 'Ages 3–8',
     gradient: 'from-pink-400 via-rose-400 to-amber-400',
     borderColor: 'border-pink-200',
-    status: 'coming_soon',
+    status: 'playable',
   },
   {
     id: 'memory-match',
@@ -43,10 +43,10 @@ export const MINIGAMES_REGISTRY: MinigameDefinition[] = [
     subtitle:
       'Flip cozy wooden fruit tiles to match pairs and blend yummy smoothies!',
     emoji: '🍓',
-    badge: 'COMING SOON',
+    badge: 'PLAYABLE',
     ageTag: 'Ages 3–8',
     gradient: 'from-violet-400 via-purple-400 to-fuchsia-400',
     borderColor: 'border-violet-200',
-    status: 'coming_soon',
+    status: 'playable',
   },
 ];

@@ -34,9 +34,22 @@ import React, {
 import {Capacitor} from '@capacitor/core';
 import {App as CapacitorApp} from '@capacitor/app';
 import {MinigamesHub} from './components/MinigamesHub';
+import {SnowfallOverlay} from './components/SnowfallOverlay';
 import type {MinigameId} from './minigames/registry';
+import {
+  type AppTheme,
+  APP_THEMES,
+  loadAppTheme,
+  saveAppTheme,
+} from './utils/theme';
 
 const FruitSkyRoll = lazy(() => import('./minigames/sky-roll/FruitSkyRoll'));
+const FruitPopSplash = lazy(
+  () => import('./minigames/fruit-pop/FruitPopSplash'),
+);
+const SmoothieMemoryMatch = lazy(
+  () => import('./minigames/memory-match/SmoothieMemoryMatch'),
+);
 import {
   ANDROID_APK_DOWNLOAD_URL,
   CONFIG,
@@ -251,6 +264,99 @@ interface SmoothieOrder {
   accentColor: string;
 }
 
+const CHRISTMAS_STARS = Array.from({length: 28}, (_, i) => ({
+  nx: ((i * 197 + 43) % 97) / 97,
+  ny: ((i * 131 + 19) % 41) / 100,
+  r: 1.3 + ((i * 53) % 4) * 0.55,
+  phase: i * 1.13,
+}));
+
+const CHRISTMAS_SNOWFLAKES = Array.from({length: 42}, (_, i) => ({
+  x0: (i * 173 + 29) % 720,
+  y0: (i * 251 + 61) % 1224,
+  r: 2.0 + ((i * 37) % 5) * 0.8,
+  vy: 36 + ((i * 67) % 42),
+  swayAmp: 8 + ((i * 41) % 14),
+  swayFreq: 0.9 + ((i * 23) % 7) * 0.18,
+  phase: i * 0.87,
+  alpha: 0.42 + ((i * 19) % 5) * 0.1,
+}));
+
+function drawSantaHat(
+  ctx: CanvasRenderingContext2D,
+  x: number,
+  y: number,
+  radius: number,
+  timeSec: number,
+  opts?: {tiltRad?: number; phase?: number},
+) {
+  const capW = Math.max(20, radius * 1.05);
+  const capH = Math.max(16, radius * 0.82);
+  const brimH = Math.max(6, radius * 0.24);
+  const pomR = Math.max(4, radius * 0.17);
+  const phase = opts?.phase ?? 0;
+  const pomBob = Math.sin(timeSec * 5 + phase) * Math.max(1.5, radius * 0.05);
+
+  ctx.save();
+  ctx.translate(x, y);
+  if (opts?.tiltRad) {
+    ctx.rotate(opts.tiltRad);
+  }
+
+  // Red triangular drooping cap
+  ctx.fillStyle = '#DC2626';
+  ctx.strokeStyle = '#7F1D1D';
+  ctx.lineWidth = Math.max(1.5, Math.min(3, radius * 0.045));
+  ctx.beginPath();
+  ctx.moveTo(-capW * 0.48, 2);
+  ctx.quadraticCurveTo(
+    -capW * 0.08,
+    -capH * 1.15,
+    capW * 0.56,
+    -capH * 0.36 + pomBob * 0.5,
+  );
+  ctx.quadraticCurveTo(capW * 0.24, -capH * 0.08, capW * 0.46, 2);
+  ctx.closePath();
+  ctx.fill();
+  ctx.stroke();
+
+  // Subtle crimson highlight fold
+  ctx.fillStyle = '#EF4444';
+  ctx.beginPath();
+  ctx.moveTo(-capW * 0.3, -1);
+  ctx.quadraticCurveTo(-capW * 0.06, -capH * 0.82, capW * 0.24, -capH * 0.45);
+  ctx.quadraticCurveTo(0, -capH * 0.32, -capW * 0.14, -1);
+  ctx.closePath();
+  ctx.fill();
+
+  // Fluffy white brim
+  ctx.fillStyle = '#FFFFFF';
+  ctx.strokeStyle = '#CBD5E1';
+  ctx.lineWidth = Math.max(1.2, Math.min(2.2, radius * 0.035));
+  ctx.beginPath();
+  ctx.roundRect(-capW * 0.52, -brimH * 0.45, capW * 1.04, brimH, brimH * 0.5);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.fillStyle = '#F8FAFC';
+  ctx.beginPath();
+  ctx.arc(-capW * 0.42, 0, brimH * 0.46, 0, Math.PI * 2);
+  ctx.arc(0, -brimH * 0.04, brimH * 0.5, 0, Math.PI * 2);
+  ctx.arc(capW * 0.42, 0, brimH * 0.46, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Bouncy white pom-pom
+  ctx.fillStyle = '#FFFFFF';
+  ctx.strokeStyle = '#CBD5E1';
+  ctx.lineWidth = Math.max(1.2, Math.min(2, radius * 0.03));
+  ctx.beginPath();
+  ctx.arc(capW * 0.58, -capH * 0.35 + pomBob, pomR, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.stroke();
+
+  ctx.restore();
+}
+
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stepperRef = useRef<ReturnType<typeof createFixedStepper> | null>(null);
@@ -311,11 +417,26 @@ export default function App() {
   const [isEndlessMode, setIsEndlessMode] = useState(false);
   const [gameMode, setGameMode] = useState<GameMode>('CLASSIC');
   const [activeScreen, setActiveScreen] = useState<
-    'JUICY_DROP' | 'MINIGAMES_HUB' | 'SKY_ROLL'
+    | 'JUICY_DROP'
+    | 'MINIGAMES_HUB'
+    | 'SKY_ROLL'
+    | 'FRUIT_POP'
+    | 'MEMORY_MATCH'
   >('JUICY_DROP');
   const activeScreenRef = useRef(activeScreen);
   activeScreenRef.current = activeScreen;
   const skyRollBackHandlerRef = useRef<(() => void) | null>(null);
+  const fruitPopBackHandlerRef = useRef<(() => void) | null>(null);
+  const memoryMatchBackHandlerRef = useRef<(() => void) | null>(null);
+  const [appTheme, setAppTheme] = useState<AppTheme>(loadAppTheme);
+  const appThemeRef = useRef<AppTheme>(appTheme);
+  appThemeRef.current = appTheme;
+  const toggleAppTheme = useCallback((playSfx = true) => {
+    if (playSfx) {
+      gameAudio.playConfirmSelect();
+    }
+    setAppTheme((prev) => (prev === 'CHRISTMAS' ? 'ORCHARD' : 'CHRISTMAS'));
+  }, []);
   const dailyInfo = useMemo(() => getDailyHarvestInfo(), []);
   const [dailyHighScore, setDailyHighScore] = useState<number>(() => {
     if (typeof window === 'undefined') return 0;
@@ -458,6 +579,10 @@ export default function App() {
   }, [musicMuted]);
 
   useEffect(() => {
+    saveAppTheme(appTheme);
+  }, [appTheme]);
+
+  useEffect(() => {
     kidVoice.setEnabled(kidVoiceEnabled && !sfxMuted);
     try {
       localStorage.setItem(KID_VOICE_STORAGE_KEY, kidVoiceEnabled ? '1' : '0');
@@ -574,8 +699,11 @@ export default function App() {
   // Back key handling
   useEffect(() => {
     (window as any).canHandleBackKey =
-      gameState.status !== 'START' || isHowToPlayOpen || isEvolutionTreeOpen;
-  }, [gameState.status, isHowToPlayOpen, isEvolutionTreeOpen]);
+      activeScreen !== 'JUICY_DROP' ||
+      gameState.status !== 'START' ||
+      isHowToPlayOpen ||
+      isEvolutionTreeOpen;
+  }, [activeScreen, gameState.status, isHowToPlayOpen, isEvolutionTreeOpen]);
 
   const inputRef = useInput(
     canvasRef,
@@ -1185,6 +1313,7 @@ export default function App() {
   // Direct keyboard listener for instant dropping, Hold swap, and powerup shortcuts
   useEffect(() => {
     const handleDirectKeyDown = (e: KeyboardEvent) => {
+      if (activeScreenRef.current !== 'JUICY_DROP') return;
       if (gameStateRef.current.status !== 'PLAYING') return;
       if (
         isMenuOpenRef.current ||
@@ -3597,19 +3726,114 @@ export default function App() {
   // Main Draw Pipeline
   const draw = (ctx: CanvasRenderingContext2D) => {
     prepareCanvas(ctx, canvasWidth, canvasHeight);
+    const isChristmasTheme = appThemeRef.current === 'CHRISTMAS';
+    const nowSec = performance.now() * 0.001;
 
-    // 1. Cozy Background Backdrop
-    drawBackground(
-      ctx,
-      assets['cozy_wooden_backdrop'],
-      canvasWidth,
-      canvasHeight,
-      THEME.backgroundPastel,
-    );
+    // 1. Cozy Background Backdrop (Winter Twilight in Christmas mode)
+    if (isChristmasTheme) {
+      const skyGrad = ctx.createLinearGradient(0, 0, 0, canvasHeight);
+      skyGrad.addColorStop(0, '#0F172A');
+      skyGrad.addColorStop(0.55, '#064E3B');
+      skyGrad.addColorStop(1, '#1E1B4B');
+      ctx.fillStyle = skyGrad;
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
-    // Warm ambient tint for atmosphere
-    ctx.fillStyle = 'rgba(253, 246, 227, 0.25)';
-    ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+      ctx.save();
+      // Soft glowing winter moon in upper-right sky
+      ctx.fillStyle = 'rgba(254, 243, 199, 0.14)';
+      ctx.beginPath();
+      ctx.arc(canvasWidth * 0.84, 155, 58, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = 'rgba(254, 249, 195, 0.85)';
+      ctx.beginPath();
+      ctx.arc(canvasWidth * 0.84, 155, 28, 0, Math.PI * 2);
+      ctx.fill();
+
+      // Twinkling winter stars
+      ctx.fillStyle = '#FEF9C3';
+      for (let i = 0; i < CHRISTMAS_STARS.length; i++) {
+        const s = CHRISTMAS_STARS[i];
+        ctx.globalAlpha =
+          0.35 + 0.55 * (0.5 + 0.5 * Math.sin(nowSec * 2.2 + s.phase));
+        ctx.beginPath();
+        ctx.arc(
+          s.nx * canvasWidth,
+          s.ny * canvasHeight,
+          s.r,
+          0,
+          Math.PI * 2,
+        );
+        ctx.fill();
+      }
+
+      // Snowy hill silhouette behind the jar base
+      ctx.globalAlpha = 1;
+      ctx.fillStyle = '#CBD5E1';
+      ctx.beginPath();
+      ctx.moveTo(0, canvasHeight);
+      ctx.lineTo(0, canvasHeight - 135);
+      ctx.quadraticCurveTo(
+        canvasWidth * 0.28,
+        canvasHeight - 190,
+        canvasWidth * 0.55,
+        canvasHeight - 140,
+      );
+      ctx.quadraticCurveTo(
+        canvasWidth * 0.82,
+        canvasHeight - 95,
+        canvasWidth,
+        canvasHeight - 155,
+      );
+      ctx.lineTo(canvasWidth, canvasHeight);
+      ctx.closePath();
+      ctx.fill();
+
+      ctx.fillStyle = '#F8FAFC';
+      ctx.beginPath();
+      ctx.moveTo(0, canvasHeight);
+      ctx.lineTo(0, canvasHeight - 110);
+      ctx.quadraticCurveTo(
+        canvasWidth * 0.35,
+        canvasHeight - 145,
+        canvasWidth * 0.68,
+        canvasHeight - 108,
+      );
+      ctx.quadraticCurveTo(
+        canvasWidth * 0.88,
+        canvasHeight - 85,
+        canvasWidth,
+        canvasHeight - 120,
+      );
+      ctx.lineTo(canvasWidth, canvasHeight);
+      ctx.closePath();
+      ctx.fill();
+
+      // Deterministic falling snowflakes (zero per-frame allocations)
+      ctx.fillStyle = '#FFFFFF';
+      for (let i = 0; i < CHRISTMAS_SNOWFLAKES.length; i++) {
+        const f = CHRISTMAS_SNOWFLAKES[i];
+        const sy = ((f.y0 + f.vy * nowSec) % (canvasHeight + 24)) - 12;
+        const sx =
+          f.x0 + Math.sin(nowSec * f.swayFreq + f.phase) * f.swayAmp;
+        ctx.globalAlpha = f.alpha;
+        ctx.beginPath();
+        ctx.arc(sx, sy, f.r, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    } else {
+      drawBackground(
+        ctx,
+        assets['cozy_wooden_backdrop'],
+        canvasWidth,
+        canvasHeight,
+        THEME.backgroundPastel,
+      );
+
+      // Warm ambient tint for atmosphere
+      ctx.fillStyle = 'rgba(253, 246, 227, 0.25)';
+      ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    }
 
     // Playfield container with subtle screen-shake transform
     ctx.save();
@@ -3622,8 +3846,10 @@ export default function App() {
 
     // 2. Render Wooden Shelf & Jar Backdrop
     ctx.save();
-    // Glass Jar Interior Glow
-    ctx.fillStyle = THEME.jarGlass;
+    // Glass Jar Interior Glow (brighter frosted glass in Christmas mode)
+    ctx.fillStyle = isChristmasTheme
+      ? 'rgba(241, 245, 249, 0.58)'
+      : THEME.jarGlass;
     ctx.beginPath();
     ctx.roundRect(jarX, jarTop, jarWidth, jarBottom - jarTop, [
       0,
@@ -3733,6 +3959,77 @@ export default function App() {
     ctx.closePath();
     ctx.fill();
     ctx.restore();
+
+    // 2.5 Christmas Evergreen Garland & Twinkling Fairy Lights along Jar Rim
+    if (isChristmasTheme) {
+      ctx.save();
+      const garlandLeft = jarX - 10;
+      const garlandRight = jarRight + 10;
+      const garlandSpan = garlandRight - garlandLeft;
+      const numArcs = 6;
+      const arcW = garlandSpan / numArcs;
+
+      // Dark pine shadow bough
+      ctx.strokeStyle = '#14532D';
+      ctx.lineWidth = 10;
+      ctx.lineCap = 'round';
+      ctx.beginPath();
+      for (let i = 0; i < numArcs; i++) {
+        const x0 = garlandLeft + i * arcW;
+        const x1 = x0 + arcW;
+        const cx = (x0 + x1) * 0.5;
+        if (i === 0) ctx.moveTo(x0, jarTop);
+        ctx.quadraticCurveTo(cx, jarTop + 10, x1, jarTop);
+      }
+      ctx.stroke();
+
+      // Brighter evergreen pine highlights
+      ctx.strokeStyle = '#15803D';
+      ctx.lineWidth = 5.5;
+      ctx.beginPath();
+      for (let i = 0; i < numArcs; i++) {
+        const x0 = garlandLeft + i * arcW;
+        const x1 = x0 + arcW;
+        const cx = (x0 + x1) * 0.5;
+        if (i === 0) ctx.moveTo(x0, jarTop - 1);
+        ctx.quadraticCurveTo(cx, jarTop + 8, x1, jarTop - 1);
+      }
+      ctx.stroke();
+
+      // Twinkling warm-gold, ruby & emerald fairy lights (no shadowBlur)
+      const numBulbs = 17;
+      for (let i = 0; i < numBulbs; i++) {
+        const t = i / (numBulbs - 1);
+        const bx = garlandLeft + 6 + t * (garlandSpan - 12);
+        const arcPhase = (t * numArcs) % 1;
+        const sag = 4 * arcPhase * (1 - arcPhase) * 8;
+        const by = jarTop + 2 + sag;
+
+        const twinkle = 0.55 + 0.45 * Math.sin(nowSec * 3.8 + i * 1.15);
+        const colorIdx = i % 3;
+        const bulbColor =
+          colorIdx === 0 ? '#FDE047' : colorIdx === 1 ? '#F43F5E' : '#34D399';
+        const glowColor =
+          colorIdx === 0
+            ? 'rgba(253, 224, 71, 0.35)'
+            : colorIdx === 1
+            ? 'rgba(244, 63, 94, 0.35)'
+            : 'rgba(52, 211, 153, 0.35)';
+
+        ctx.globalAlpha = twinkle * 0.85;
+        ctx.fillStyle = glowColor;
+        ctx.beginPath();
+        ctx.arc(bx, by, 7.5, 0, Math.PI * 2);
+        ctx.fill();
+
+        ctx.globalAlpha = 0.72 + twinkle * 0.28;
+        ctx.fillStyle = bulbColor;
+        ctx.beginPath();
+        ctx.arc(bx, by, 3.3, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      ctx.restore();
+    }
 
     // 2.8 Cozy Twilight Veil & Twinkling Stars inside Jar during Little Explorer Sleepy Wind-Down / Bedtime
     const isExplorerCanvas = gameModeRef.current === 'EXPLORER';
@@ -4038,6 +4335,28 @@ export default function App() {
         ctx.strokeText('zZz', capW * 0.35, -capH * 0.85 + zBob);
         ctx.fillText('zZz', capW * 0.35, -capH * 0.85 + zBob);
         ctx.restore();
+      } else if (isChristmasTheme) {
+        const effR = radius * fruit.renderScale;
+        if (fruit.special === 'none' && fruit.tier === 13) {
+          const side = Math.sin(angle) >= 0 ? -1 : 1;
+          drawSantaHat(
+            ctx,
+            x + side * effR * 0.68,
+            y - effR * 0.56 * fruit.squashY,
+            effR * 0.45,
+            nowSec,
+            {tiltRad: side * 0.45, phase: fruit.body.id},
+          );
+        } else {
+          drawSantaHat(
+            ctx,
+            x,
+            y - effR * fruit.squashY * 0.82,
+            effR,
+            nowSec,
+            {phase: fruit.body.id},
+          );
+        }
       }
     });
 
@@ -4130,7 +4449,11 @@ export default function App() {
         ctx.strokeStyle = isMergeTarget
           ? reticlePrimaryColor
           : isReady
-          ? 'rgba(140, 88, 50, 0.45)'
+          ? isChristmasTheme
+            ? 'rgba(226, 232, 240, 0.55)'
+            : 'rgba(140, 88, 50, 0.45)'
+          : isChristmasTheme
+          ? 'rgba(226, 232, 240, 0.25)'
           : 'rgba(140, 88, 50, 0.2)';
         ctx.lineWidth = isMergeTarget ? 3 : isReady ? 2.5 : 1.5;
         ctx.beginPath();
@@ -4271,12 +4594,27 @@ export default function App() {
       drawFruitFace(ctx, radius, fakeHeldFruit);
 
       // Dropper cloud / holder badge above
-      ctx.fillStyle = '#8C5832';
-      ctx.beginPath();
-      ctx.arc(0, -radius - 12, 6, 0, Math.PI * 2);
-      ctx.fill();
+      if (!isChristmasTheme) {
+        ctx.fillStyle = '#8C5832';
+        ctx.beginPath();
+        ctx.arc(0, -radius - 12, 6, 0, Math.PI * 2);
+        ctx.fill();
+      }
 
       ctx.restore();
+
+      if (isChristmasTheme) {
+        ctx.save();
+        ctx.globalAlpha = 0.65 + 0.35 * readyProgress;
+        drawSantaHat(
+          ctx,
+          curDropperX,
+          dropperY - radius * dropperScale * 0.82,
+          radius * dropperScale,
+          nowSec,
+        );
+        ctx.restore();
+      }
     }
 
     // 6. Render Particles
@@ -4750,6 +5088,22 @@ export default function App() {
           }
           return;
         }
+        if (screen === 'FRUIT_POP') {
+          if (fruitPopBackHandlerRef.current) {
+            fruitPopBackHandlerRef.current();
+          } else {
+            setActiveScreen('MINIGAMES_HUB');
+          }
+          return;
+        }
+        if (screen === 'MEMORY_MATCH') {
+          if (memoryMatchBackHandlerRef.current) {
+            memoryMatchBackHandlerRef.current();
+          } else {
+            setActiveScreen('MINIGAMES_HUB');
+          }
+          return;
+        }
         if (screen === 'MINIGAMES_HUB') {
           setActiveScreen('JUICY_DROP');
           return;
@@ -4807,6 +5161,18 @@ export default function App() {
           if (activeScreenRef.current === 'SKY_ROLL') {
             if (skyRollBackHandlerRef.current) {
               skyRollBackHandlerRef.current();
+            } else {
+              setActiveScreen('MINIGAMES_HUB');
+            }
+          } else if (activeScreenRef.current === 'FRUIT_POP') {
+            if (fruitPopBackHandlerRef.current) {
+              fruitPopBackHandlerRef.current();
+            } else {
+              setActiveScreen('MINIGAMES_HUB');
+            }
+          } else if (activeScreenRef.current === 'MEMORY_MATCH') {
+            if (memoryMatchBackHandlerRef.current) {
+              memoryMatchBackHandlerRef.current();
             } else {
               setActiveScreen('MINIGAMES_HUB');
             }
@@ -4869,11 +5235,15 @@ export default function App() {
       !isMenuOpen &&
       !isSleepyBedtime &&
       activeScreen === 'JUICY_DROP') ||
-      activeScreen === 'SKY_ROLL') &&
+      activeScreen === 'SKY_ROLL' ||
+      activeScreen === 'FRUIT_POP' ||
+      activeScreen === 'MEMORY_MATCH') &&
     !musicMuted;
 
   const musicPlaybackRate =
-    gameMode === 'EXPLORER' && (isSleepyWindDown || isSleepyBedtime)
+    activeScreen !== 'JUICY_DROP' || gameState.status !== 'PLAYING'
+      ? 1.0
+      : gameMode === 'EXPLORER' && (isSleepyWindDown || isSleepyBedtime)
       ? 0.88
       : antiGravityActive
       ? 0.94
@@ -5616,7 +5986,11 @@ export default function App() {
       {/* GAME MENU OVERLAY */}
       {isMenuOpen && gameState.status === 'PLAYING' && (
         <MenuOverlay tone="neutral" zIndex={50}>
-          <div className="w-full max-w-md bg-[#FFF9F0] border-4 border-[#8C5832] rounded-3xl p-5 m-3 shadow-2xl flex flex-col items-center pointer-events-auto max-h-[90vh] overflow-y-auto touch-auto">
+          <SnowfallOverlay
+            active={appTheme === 'CHRISTMAS' && activeScreen === 'JUICY_DROP'}
+            density="light"
+          />
+          <div className="relative z-30 w-full max-w-md bg-[#FFF9F0] border-4 border-[#8C5832] rounded-3xl p-5 m-3 shadow-2xl flex flex-col items-center pointer-events-auto max-h-[90vh] overflow-y-auto touch-auto">
             <h2 className="text-2xl md:text-3xl font-black text-[#5C3A21] mb-4 tracking-wide">
               {gameMode === 'EXPLORER' ? '🧸 Grown-Up Menu' : 'Game Menu'}
             </h2>
@@ -5648,6 +6022,32 @@ export default function App() {
                   Music: {musicMuted ? 'Off' : 'On'}
                 </button>
               </div>
+
+              {/* Theme Toggle */}
+              <button
+                type="button"
+                onClick={() => toggleAppTheme()}
+                className={`w-full py-2.5 px-4 rounded-2xl font-extrabold text-sm border-2 transition-all flex items-center justify-between gap-2 active:scale-98 cursor-pointer ${
+                  appTheme === 'CHRISTMAS'
+                    ? 'bg-gradient-to-r from-emerald-800 via-teal-800 to-indigo-900 hover:from-emerald-700 hover:to-indigo-800 text-amber-100 border-amber-300/80 shadow-md'
+                    : 'bg-[#FAF3E7] hover:bg-[#F3E3CF] text-[#5C3A21] border-[#D4A373]'
+                }`}>
+                <span className="flex items-center gap-2 text-left min-w-0">
+                  <span className="text-base leading-none shrink-0">
+                    {APP_THEMES[appTheme].emoji}
+                  </span>
+                  <span>Theme: {APP_THEMES[appTheme].label}</span>
+                </span>
+                <span
+                  className={`shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded-full font-black uppercase tracking-wide ${
+                    appTheme === 'CHRISTMAS'
+                      ? 'bg-amber-300 text-emerald-950'
+                      : 'bg-amber-200/80 text-[#5C3A21]'
+                  }`}>
+                  {APP_THEMES[appTheme].emoji}{' '}
+                  {APP_THEMES[appTheme].shortLabel}
+                </span>
+              </button>
 
               {/* Little Explorer Grown-Up Settings (Voiceover & Sleepy Fruits Timer) */}
               <div className="p-3 rounded-2xl bg-sky-50 border-2 border-sky-200 space-y-2.5">
@@ -5731,7 +6131,11 @@ export default function App() {
       {/* START TITLE SCREEN */}
       {gameState.status === 'START' && (
         <MenuOverlay tone="neutral">
-          <div className="bg-[#FFF9F0] p-6 md:p-7 rounded-3xl shadow-2xl flex flex-col items-center w-full max-w-sm border-4 border-[#8C5832] pointer-events-auto">
+          <SnowfallOverlay
+            active={appTheme === 'CHRISTMAS' && activeScreen === 'JUICY_DROP'}
+            density="light"
+          />
+          <div className="relative z-30 bg-[#FFF9F0] p-6 md:p-7 rounded-3xl shadow-2xl flex flex-col items-center w-full max-w-sm border-4 border-[#8C5832] pointer-events-auto">
             <div className="w-14 h-14 rounded-full bg-[#FFE4BA] border-2 border-[#C89666] flex items-center justify-center shadow-inner mb-2.5">
               <span className="text-3xl animate-bounce">👑</span>
             </div>
@@ -5778,7 +6182,32 @@ export default function App() {
                   <span>MINIGAMES</span>
                 </span>
                 <span className="text-[10px] bg-black/25 px-2 py-0.5 rounded-full font-black text-amber-100">
-                  NEW! 3D Sky Roll
+                  3 GAMES!
+                </span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => toggleAppTheme()}
+                className={`w-full py-2.5 px-4 rounded-2xl font-extrabold text-sm border-2 transition-all flex items-center justify-between gap-2 active:scale-98 cursor-pointer ${
+                  appTheme === 'CHRISTMAS'
+                    ? 'bg-gradient-to-r from-emerald-800 via-teal-800 to-indigo-900 hover:from-emerald-700 hover:to-indigo-800 text-amber-100 border-amber-300/80 shadow-md'
+                    : 'bg-[#FAF3E7] hover:bg-[#F3E3CF] text-[#5C3A21] border-[#D4A373]'
+                }`}>
+                <span className="flex items-center gap-2 text-left min-w-0">
+                  <span className="text-base leading-none shrink-0">
+                    {APP_THEMES[appTheme].emoji}
+                  </span>
+                  <span>Theme: {APP_THEMES[appTheme].label}</span>
+                </span>
+                <span
+                  className={`shrink-0 whitespace-nowrap text-[10px] px-2 py-0.5 rounded-full font-black uppercase tracking-wide ${
+                    appTheme === 'CHRISTMAS'
+                      ? 'bg-amber-300 text-emerald-950'
+                      : 'bg-amber-200/80 text-[#5C3A21]'
+                  }`}>
+                  {APP_THEMES[appTheme].emoji}{' '}
+                  {APP_THEMES[appTheme].shortLabel}
                 </span>
               </button>
 
@@ -5871,9 +6300,15 @@ export default function App() {
       {/* MINIGAMES HUB OVERLAY */}
       {activeScreen === 'MINIGAMES_HUB' && (
         <MinigamesHub
+          theme={appTheme}
+          onToggleTheme={() => toggleAppTheme(false)}
           onSelectMinigame={(id: MinigameId) => {
             if (id === 'sky-roll') {
               setActiveScreen('SKY_ROLL');
+            } else if (id === 'fruit-pop') {
+              setActiveScreen('FRUIT_POP');
+            } else if (id === 'memory-match') {
+              setActiveScreen('MEMORY_MATCH');
             }
           }}
           onBack={() => setActiveScreen('JUICY_DROP')}
@@ -5899,6 +6334,64 @@ export default function App() {
             onToggleMusic={() => setMusicMuted((prev) => !prev)}
             onExitToHub={() => setActiveScreen('MINIGAMES_HUB')}
             backHandlerRef={skyRollBackHandlerRef}
+          />
+        </Suspense>
+      )}
+
+      {/* LAZY-LOADED FRUIT POP SPLASH MINIGAME */}
+      {activeScreen === 'FRUIT_POP' && (
+        <Suspense
+          fallback={
+            <div
+              className={`fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 ${
+                appTheme === 'CHRISTMAS'
+                  ? 'bg-gradient-to-b from-slate-900 via-emerald-950 to-indigo-950 text-amber-100'
+                  : 'bg-gradient-to-b from-sky-200 to-[#FDF6E3] text-[#5C3A21]'
+              }`}>
+              <div className="text-5xl animate-bounce">🫧</div>
+              <div className="text-xl font-black tracking-wide">
+                Loading Fruit Pop Splash...
+              </div>
+            </div>
+          }>
+          <FruitPopSplash
+            sfxMuted={sfxMuted}
+            musicMuted={musicMuted}
+            kidVoiceEnabled={kidVoiceEnabled}
+            theme={appTheme}
+            onToggleSfx={() => setSfxMuted((prev) => !prev)}
+            onToggleMusic={() => setMusicMuted((prev) => !prev)}
+            onExitToHub={() => setActiveScreen('MINIGAMES_HUB')}
+            backHandlerRef={fruitPopBackHandlerRef}
+          />
+        </Suspense>
+      )}
+
+      {/* LAZY-LOADED SMOOTHIE MEMORY MATCH MINIGAME */}
+      {activeScreen === 'MEMORY_MATCH' && (
+        <Suspense
+          fallback={
+            <div
+              className={`fixed inset-0 z-50 flex flex-col items-center justify-center gap-3 ${
+                appTheme === 'CHRISTMAS'
+                  ? 'bg-gradient-to-b from-slate-900 via-emerald-950 to-indigo-950 text-amber-100'
+                  : 'bg-gradient-to-b from-amber-100 to-[#FDF6E3] text-[#5C3A21]'
+              }`}>
+              <div className="text-5xl animate-bounce">🍓</div>
+              <div className="text-xl font-black tracking-wide">
+                Loading Smoothie Memory Match...
+              </div>
+            </div>
+          }>
+          <SmoothieMemoryMatch
+            sfxMuted={sfxMuted}
+            musicMuted={musicMuted}
+            kidVoiceEnabled={kidVoiceEnabled}
+            theme={appTheme}
+            onToggleSfx={() => setSfxMuted((prev) => !prev)}
+            onToggleMusic={() => setMusicMuted((prev) => !prev)}
+            onExitToHub={() => setActiveScreen('MINIGAMES_HUB')}
+            backHandlerRef={memoryMatchBackHandlerRef}
           />
         </Suspense>
       )}
