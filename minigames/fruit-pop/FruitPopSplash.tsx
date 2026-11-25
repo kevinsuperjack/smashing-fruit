@@ -419,6 +419,10 @@ export const FruitPopSplash: React.FC<FruitPopSplashProps> = ({
 
   const viewRef = useRef<FruitPopView>(view);
   viewRef.current = view;
+  const setViewSynced = useCallback((next: FruitPopView) => {
+    viewRef.current = next;
+    setView(next);
+  }, []);
   const themeRef = useRef(theme);
   themeRef.current = theme;
   const kidVoiceEnabledRef = useRef(kidVoiceEnabled);
@@ -601,11 +605,11 @@ export const FruitPopSplash: React.FC<FruitPopSplashProps> = ({
           const summary = commitRunResults(state);
           setResults(summary);
           setHud(getFruitPopHudSnapshot(state));
-          setView('RESULTS');
+          setViewSynced('RESULTS');
         }
       }
     },
-    [commitRunResults, showBanner],
+    [commitRunResults, setViewSynced, showBanner],
   );
 
   const startRun = useCallback(
@@ -684,10 +688,11 @@ export const FruitPopSplash: React.FC<FruitPopSplashProps> = ({
     backHandlerRef.current = () => {
       const current = viewRef.current;
       if (current === 'PLAYING') {
+        if (engineStateRef.current?.status !== 'PLAYING') return;
         kidVoice.cancel();
-        setView('PAUSED');
+        setViewSynced('PAUSED');
       } else if (current === 'PAUSED') {
-        setView('PLAYING');
+        setViewSynced('PLAYING');
       } else if (current === 'RESULTS') {
         returnToLobby();
       } else {
@@ -698,14 +703,17 @@ export const FruitPopSplash: React.FC<FruitPopSplashProps> = ({
     return () => {
       backHandlerRef.current = null;
     };
-  }, [backHandlerRef, onExitToHub, returnToLobby]);
+  }, [backHandlerRef, onExitToHub, returnToLobby, setViewSynced]);
 
   // Auto-pause on tab hide / window blur
   useEffect(() => {
     const handleAutoPause = () => {
-      if (viewRef.current === 'PLAYING') {
+      if (
+        viewRef.current === 'PLAYING' &&
+        engineStateRef.current?.status === 'PLAYING'
+      ) {
         kidVoice.cancel();
-        setView('PAUSED');
+        setViewSynced('PAUSED');
       }
     };
     const onVisibilityChange = () => {
@@ -717,7 +725,7 @@ export const FruitPopSplash: React.FC<FruitPopSplashProps> = ({
       document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('blur', handleAutoPause);
     };
-  }, []);
+  }, [setViewSynced]);
 
   // Cleanup voice and toast timers on unmount
   useEffect(() => {
